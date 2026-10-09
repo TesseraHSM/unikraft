@@ -242,7 +242,7 @@ jobs:
         echo "Exported $(grep -c '' reports.baseline) report hashes."
 
     - name: Upload report hashes
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: codechecker-baseline
         path: reports.baseline
@@ -277,7 +277,7 @@ jobs:
 
     - name: Upload report details
       continue-on-error: true
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: codechecker-findings
         path: findings.json
@@ -286,7 +286,7 @@ jobs:
 
     - name: Upload full report
       if: ${{ always() && steps.codechecker.outputs.result-html-dir != '' }}
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v6
       with:
         name: codechecker-report
         path: |
