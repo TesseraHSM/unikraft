@@ -5,3 +5,19 @@ config LIBVIRTIO_PCI
 	select LIBUKBUS_PCI
 	help
 		Support virtio devices on PCI bus
+
+config LIBVIRTIO_PCI_MODERN
+	bool "Modern virtio PCI transport"
+	depends on ARCH_X86_64 && LIBUKPAGING
+	depends on LIBUKACPI
+	depends on LIBUKINTCTLR_APIC
+	select LIBUKBUS_PCI
+	select LIBVIRTIO_BUS
+	select LIBVIRTIO_RING
+	select X86_SNP_MMIO_MAPPED if HAVE_SNP_CONFIDENTIAL_MMIO
+	default n
+	help
+	  Discover modern virtio through ACPI MCFG and generic PCI, use
+	  mapped device registers, and deliver completions through MSI-X. On
+	  an SNP guest, registered MMIO mappings are served transparently by
+	  the #VC handler.

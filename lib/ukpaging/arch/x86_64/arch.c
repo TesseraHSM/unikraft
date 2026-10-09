@@ -18,6 +18,7 @@ int pgarch_pt_add_mem(struct uk_pagetable *pt, __paddr_t start, __sz len)
 	void *fa_meta;
 	__sz fa_meta_size;
 	__vaddr_t dm_off;
+	int rc;
 
 	UK_ASSERT(start <= __PADDR_MAX - len);
 	UK_ASSERT(uk_pal_paddr_range_isvalid(start, len));
@@ -39,7 +40,9 @@ int pgarch_pt_add_mem(struct uk_pagetable *pt, __paddr_t start, __sz len)
 
 	UK_ASSERT(pt->fa->addmem);
 
-	return pt->fa->addmem(pt->fa, fa_meta, start, pages, dm_off);
+	rc = pt->fa->addmem(pt->fa, fa_meta, start, pages, dm_off);
+
+	return rc;
 }
 
 int pgarch_pt_init(struct uk_pagetable *pt, __paddr_t start, __sz len)

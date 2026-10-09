@@ -55,12 +55,15 @@
 #include <stdint.h>
 
 #include <uk/arch/util.h>
+#include <uk/arch/x86_64.h>
+#include <uk/config.h>
 #include <uk/lcpu.h>
 #include <uk/plat/time.h>
 #include <uk/timeconv.h>
 #include <uk/print.h>
 #include <uk/assert.h>
-#include <uk/atomic.h>
+
+#include <x86/tscclock.h>
 
 #define TIMER_CNTR           0x40
 #define TIMER_MODE           0x43
@@ -92,20 +95,6 @@
 #if TIMER_HZ / CONFIG_HZ < 1
 #error Timer tick frequency (CONFIG_HZ) cannot be higher than PIT frequency!
 #endif
-
-/* RTC wall time offset at monotonic time base. */
-static __u64 rtc_epochoffset;
-
-/*
- * TSC clock specific.
- */
-
-/* Base time values at the last call to tscclock_monotonic(). */
-static __u64 time_base;
-static __u64 tsc_base;
-
-/* Multiplier for converting TSC ticks to nsecs. (0.32) fixed point. */
-static __u32 tsc_mult;
 
 /*
  * Multiplier for converting nsecs to PIT ticks. (1.32) fixed point.
@@ -195,30 +184,7 @@ static __u64 rtc_gettimeofday(void)
 	return uktimeconv_bmkclock_to_nsec(&dt);
 }
 
-/*
- * Return monotonic time using TSC clock.
- */
-__u64 tscclock_monotonic(void)
-{
-	__u64 tsc_now, tsc_delta;
-
-	/*
-	 * Update time_base (monotonic time) and tsc_base (TSC time).
-	 */
-	tsc_now = uk_arch_x86_64_rdtsc();
-	tsc_delta = tsc_now - tsc_base;
-	if (tsc_delta >= UINT64_MAX / 2)
-		tsc_delta = 1;
-	time_base += uk_arch_x86_64_mul64_32(tsc_delta, tsc_mult);
-	tsc_base = tsc_now;
-
-	return time_base;
-}
-
-/*
- * Calibrate TSC and initialise TSC clock.
- */
-int tscclock_init(void)
+int tscclock_pc_init(void)
 {
 	__u64 tsc_freq = 0, rtc_boot;
 	__u32 eax, ebx, ecx, edx;
@@ -244,7 +210,7 @@ int tscclock_init(void)
 	uk_arch_x86_64_cpuid(0x40000000, 0, &eax, &ebx, &ecx, &edx);
 	if (eax >= 0x40000010) {
 		uk_pr_info("Retrieving TSC clock frequency from hypervisor\n");
-		tsc_base = uk_arch_x86_64_rdtsc();
+		tscclock_tsc_base = uk_arch_x86_64_rdtsc();
 		uk_arch_x86_64_cpuid(0x40000010, 0, &eax, &ebx, &ecx, &edx);
 		tsc_freq = eax * 1000;
 	}
@@ -256,9 +222,9 @@ int tscclock_init(void)
 	 */
 	if (!tsc_freq) {
 		uk_pr_info("Calibrating TSC clock against i8254 timer\n");
-		tsc_base = uk_arch_x86_64_rdtsc();
+		tscclock_tsc_base = uk_arch_x86_64_rdtsc();
 		i8254_delay(100000);
-		tsc_freq = (uk_arch_x86_64_rdtsc() - tsc_base) * 10;
+		tsc_freq = (uk_arch_x86_64_rdtsc() - tscclock_tsc_base) * 10;
 	}
 
 	/*
@@ -274,7 +240,7 @@ int tscclock_init(void)
 	 * FIXME: this will overflow with small TSC frequencies. We should
 	 * probably calculate the TSC shift dynamically like solo5/hvt does.
 	 */
-	tsc_mult = (UKARCH_NSEC_PER_SEC << 32) / tsc_freq;
+	tscclock_tsc_mult = (UKARCH_NSEC_PER_SEC << 32) / tsc_freq;
 
 	uk_pr_info("Clock source: TSC, frequency estimate is %llu Hz\n",
 		   (unsigned long long) tsc_freq);
@@ -289,7 +255,7 @@ int tscclock_init(void)
 	 * Compute RTC epoch offset by subtracting monotonic time_base from RTC
 	 * time at boot.
 	 */
-	rtc_epochoffset = rtc_boot - time_base;
+	tscclock_epoch_offset = rtc_boot - tscclock_time_base;
 
 	/*
 	 * Initialise i8254 timer channel 0 to mode 4 (one shot).
@@ -303,37 +269,16 @@ int tscclock_init(void)
 }
 
 /*
- * Return epoch offset (wall time offset to monotonic clock start).
- */
-__u64 tscclock_epochoffset(void)
-{
-	return rtc_epochoffset;
-}
-
-/*
  * Minimum delta to sleep using PIT. Programming seems to have an overhead of
  * 3-4us, but play it safe here.
  */
 #define PIT_MIN_DELTA	16
 
-/*
- * Returns early if any interrupts are serviced, or if the requested delay is
- * too short. Must be called with interrupts disabled, will enable interrupts
- * "atomically" during idle loop.
- *
- * This function must be called only from the scheduler. It will screw
- * your system if you do otherwise. And, there is no reason you
- * actually want to use it anywhere else. THIS IS NOT A YIELD or any
- * kind of mutex_lock. It will simply halt the cpu, not allowing any
- * other thread to execute.
- */
-static void tscclock_cpu_block(__u64 until)
+void tscclock_pc_cpu_block(__u64 until)
 {
 	__u64 now, delta_ns;
 	__u64 delta_ticks;
 	unsigned int ticks;
-
-	UK_ASSERT(uk_lcpu_irqs_disabled());
 
 	now = ukplat_monotonic_clock();
 
@@ -384,16 +329,4 @@ static void tscclock_cpu_block(__u64 until)
 	 * and no other, but this will do for now.
 	 */
 	uk_lcpu_halt_irq();
-}
-
-unsigned long sched_have_pending_events;
-
-void time_block_until(__snsec until)
-{
-	while ((__snsec) ukplat_monotonic_clock() < until) {
-		tscclock_cpu_block(until);
-
-		if (uk_and_relax(&sched_have_pending_events, 0))
-			break;
-	}
 }

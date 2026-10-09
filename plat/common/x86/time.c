@@ -41,8 +41,16 @@
 #include <stdlib.h>
 #include <uk/plat/time.h>
 #include <uk/intctlr.h>
-#include <kvm/tscclock.h>
+#include <x86/tscclock.h>
 #include <uk/assert.h>
+#if CONFIG_HAVE_MSHV
+static __u64 timer_irqs;
+
+__u64 ukplat_time_irq_count(void)
+{
+	return __atomic_load_n(&timer_irqs, __ATOMIC_RELAXED);
+}
+#endif
 
 /* return ns since time_init() */
 __nsec ukplat_monotonic_clock(void)
@@ -62,6 +70,12 @@ __nsec ukplat_wall_clock(void)
  */
 static int timer_handler(void *arg __unused)
 {
+#if CONFIG_HAVE_MSHV
+	__u64 count = __atomic_load_n(&timer_irqs, __ATOMIC_RELAXED);
+
+	if (count != ~(__u64)0)
+		__atomic_store_n(&timer_irqs, count + 1, __ATOMIC_RELAXED);
+#endif
 	/* Yes, we handled the irq. */
 	return 1;
 }

@@ -691,6 +691,15 @@ UK_SYSCALL_R_DEFINE(int, connect, int, sock, const struct sockaddr *, addr,
 		posix_socket_getsockopt(of->file, SOL_SOCKET, SO_ERROR,
 					&ret, &_opsz);
 		uk_file_runlock(of->file);
+		/*
+		 * SO_ERROR is a plain errno, because that is what an
+		 * application reading it expects, while this function returns
+		 * the negated form every other syscall returns. A family that
+		 * stores it the POSIX way would otherwise report a refused
+		 * connection here as success.
+		 */
+		if (ret > 0)
+			ret = -ret;
 	}
 	uk_ofile_release(of);
 

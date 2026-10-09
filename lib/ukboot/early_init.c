@@ -116,11 +116,13 @@ void uk_boot_early_init(struct ukplat_bootinfo *bi)
 
 	uk_boot_earlytab_foreach(entry) {
 		UK_ASSERT(entry);
+
 		rc = (*entry->init)(bi);
 		if (unlikely(rc))
 			UK_CRASH("Early init call @ %p failed with %d",
 				 entry->init, rc);
 	}
+
 }
 
 /* Parse cmdline parameters at the earliest priority

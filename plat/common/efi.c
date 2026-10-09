@@ -10,6 +10,12 @@
 #include <uk/plat/common/bootinfo.h>
 #include <uk/isr/string.h>
 
+#if CONFIG_PLAT_GUEST_X86_CLOCK_BACKEND
+#include <uk/plat/common/efi_boot_time.h>
+
+struct ukplat_efi_boot_time ukplat_efi_boot_time;
+#endif /* CONFIG_PLAT_GUEST_X86_CLOCK_BACKEND */
+
 extern struct ukplat_memregion_desc bpt_unmap_mrd;
 static uk_efi_paddr_t uk_efi_alloc_max_paddr;
 
@@ -19,9 +25,9 @@ static enum uk_efi_alloc_type uk_efi_alloc_type = UK_EFI_ALLOCATE_ANY_PAGES;
 #else  /* !CONFIG_HAVE_PAGING */
 static enum uk_efi_alloc_type uk_efi_alloc_type = UK_EFI_ALLOCATE_MAX_ADDRESS;
 #endif /* !CONFIG_HAVE_PAGING */
-#if CONFIG_LIBUKDEBUG_PRINTD
+#if CONFIG_PLAT_GUEST_BOOT_EFI_DEBUG
 #include <stdio.h>
-#endif /* CONFIG_LIBUKDEBUG_PRINTD */
+#endif /* CONFIG_PLAT_GUEST_BOOT_EFI_DEBUG */
 
 static struct uk_efi_runtime_services *uk_efi_rs;
 static struct uk_efi_boot_services *uk_efi_bs;
@@ -38,13 +44,13 @@ static __u8 uk_efi_mat_present;
 #define UK_EFI_ABS_FNAME(f)					"\\EFI\\BOOT\\"f
 #define UK_EFI_SURPLUS_MEM_DESC_COUNT				10
 
-#define EFI_STUB_CMDLINE_FNAME	CONFIG_KVM_BOOT_PROTO_EFI_STUB_CMDLINE_FNAME
-#define EFI_STUB_INITRD_FNAME	CONFIG_KVM_BOOT_PROTO_EFI_STUB_INITRD_FNAME
-#define EFI_STUB_DTB_FNAME	CONFIG_KVM_BOOT_PROTO_EFI_STUB_DTB_FNAME
+#define EFI_STUB_CMDLINE_FNAME	CONFIG_PLAT_GUEST_BOOT_EFI_CMDLINE_FNAME
+#define EFI_STUB_INITRD_FNAME	CONFIG_PLAT_GUEST_BOOT_EFI_INITRD_FNAME
+#define EFI_STUB_DTB_FNAME	CONFIG_PLAT_GUEST_BOOT_EFI_DTB_FNAME
 
 #define UK_EFI_MAX_FMT_STR_LEN					256
 
-#if CONFIG_LIBUKDEBUG_PRINTD
+#if CONFIG_PLAT_GUEST_BOOT_EFI_DEBUG
 static __sz ascii_to_utf16(const char *str, char *str16, __sz max_len16);
 static void uk_efi_printf(const char *str, ...)
 {
@@ -70,10 +76,10 @@ static void uk_efi_printf(const char *str, ...)
 		uk_efi_printf(__VA_ARGS__);			\
 		uk_efi_do_crash();				\
 	} while (0)
-#else /* !CONFIG_LIBUKDEBUG_PRINTD */
+#else /* !CONFIG_PLAT_GUEST_BOOT_EFI_DEBUG */
 #define uk_efi_pr_debug(...)
 #define UK_EFI_CRASH(str)				uk_efi_do_crash()
-#endif /* !CONFIG_LIBUKDEBUG_PRINTD */
+#endif /* !CONFIG_PLAT_GUEST_BOOT_EFI_DEBUG */
 
 void uk_efi_jmp_to_kern(void) __noreturn;
 
@@ -211,9 +217,12 @@ static int uk_efi_md_to_bi_mrd(struct uk_efi_mem_desc *const md,
 	mrd->vbase = start;
 	mrd->len = end - start;
 
-	/* All UEFI memory regions are page-aligned */
+	/* All UEFI memory regions are page-aligned. Derive the page count
+	 * from the resulting length, as the zero-page clamp above may have
+	 * shrunk the region relative to the firmware descriptor.
+	 */
 	mrd->pg_off = 0;
-	mrd->pg_count = md->number_of_pages;
+	mrd->pg_count = mrd->len / __PAGE_SIZE;
 
 	return 0;
 }
@@ -303,6 +312,7 @@ static void uk_efi_rt_md_to_bi_mrds(struct ukplat_memregion_desc **rt_mrds,
 	struct uk_efi_cfg_tbl *ct;
 	uk_efi_status_t status;
 	uk_efi_uintn_t i;
+	__u32 j = 0;
 	__sz desc_sz;
 
 	/* Search for the MAT in UEFI System Table's Configuration Tables */
@@ -333,11 +343,15 @@ static void uk_efi_rt_md_to_bi_mrds(struct ukplat_memregion_desc **rt_mrds,
 	 * ukplat_memregion_desc's
 	 */
 	mat_md = (struct uk_efi_mem_desc *)mat->entry;
-	for (i = 0; i < *rt_mrds_count; i++) {
-		if (!(mat_md->attribute & UK_EFI_MEMORY_RUNTIME))
-			continue;
+	for (i = 0; i < mat->number_of_entries; i++) {
+		if (!(mat_md->attribute & UK_EFI_MEMORY_RUNTIME)) {
+			mat_md = (struct uk_efi_mem_desc *)((__u8 *)mat_md +
+							    desc_sz);
 
-		rt_mrd = *rt_mrds + i;
+			continue;
+		}
+
+		rt_mrd = *rt_mrds + j++;
 		rt_mrd->pbase = mat_md->physical_start;
 		rt_mrd->len = mat_md->number_of_pages * UK_EFI_PAGE_SIZE;
 		rt_mrd->pg_off = 0;
@@ -357,6 +371,9 @@ static void uk_efi_rt_md_to_bi_mrds(struct ukplat_memregion_desc **rt_mrds,
 
 		mat_md = (struct uk_efi_mem_desc *)((__u8 *)mat_md + desc_sz);
 	}
+
+	/* Only the Runtime Services entries have been converted */
+	*rt_mrds_count = j;
 }
 
 static void uk_efi_setup_bootinfo_mrds(struct ukplat_bootinfo *bi)
@@ -424,8 +441,17 @@ static struct uk_efi_ld_img_hndl *uk_efi_get_uk_img_hndl(void)
 }
 
 /* Read a file from a device, given a file name */
-static void uk_efi_read_file(uk_efi_hndl_t dev_h, const char *file_name,
-			     char **buf, __sz *len)
+/* Read an auxiliary file (command line, initrd, DTB) from the same device the
+ * image was loaded from.
+ *
+ * Returns UK_EFI_SUCCESS if the file was found and read, UK_EFI_NOT_FOUND if
+ * the file does not exist or is empty (both of which are legitimate: an ESP
+ * may legitimately contain nothing but the image itself). Any other failure is
+ * fatal and does not return.
+ */
+static uk_efi_status_t uk_efi_read_file(uk_efi_hndl_t dev_h,
+					const char *file_name,
+					char **buf, __sz *len)
 {
 	struct uk_efi_file_proto *volume, *file_hndl;
 	struct uk_efi_simple_fs_proto *sfs_proto;
@@ -458,8 +484,12 @@ static void uk_efi_read_file(uk_efi_hndl_t dev_h, const char *file_name,
 	status = volume->open(volume, &file_hndl, file_name16,
 			      UK_EFI_FILE_MODE_READ,
 			      UK_EFI_FILE_READ_ONLY | UK_EFI_FILE_HIDDEN);
-	if (unlikely(status != UK_EFI_SUCCESS))
-		UK_EFI_CRASH("Failed to open file\n");
+	if (status != UK_EFI_SUCCESS) {
+		uk_efi_pr_debug("Optional file not present, skipping\n");
+		*buf = NULL;
+		*len = 0;
+		return UK_EFI_NOT_FOUND;
+	}
 
 	/* Just like GetMemoryMap, we first need to do a dummy call */
 	file_info_len = 0;
@@ -480,6 +510,17 @@ static void uk_efi_read_file(uk_efi_hndl_t dev_h, const char *file_name,
 		UK_EFI_CRASH("Failed to get file_info\n");
 
 	*len = file_info->file_size;
+	if (*len == 0) {
+		/* An empty file carries no information. Treat it exactly like
+		 * an absent one, rather than asking for a zero-page
+		 * allocation, which UEFI rejects.
+		 */
+		uk_efi_pr_debug("Optional file is empty, skipping\n");
+		uk_efi_bs->free_pool(file_info);
+		*buf = NULL;
+		return UK_EFI_NOT_FOUND;
+	}
+
 	*buf = (char *)uk_efi_alloc_max_paddr;
 	status = uk_efi_bs->allocate_pages(uk_efi_alloc_type,
 					   UK_EFI_LOADER_DATA,
@@ -497,6 +538,8 @@ static void uk_efi_read_file(uk_efi_hndl_t dev_h, const char *file_name,
 		UK_EFI_CRASH("Failed to free file_info\n");
 
 	(*buf)[*len] = '\0';
+
+	return UK_EFI_SUCCESS;
 }
 
 static void uk_efi_setup_bootinfo_cmdl(struct ukplat_bootinfo *bi)
@@ -511,7 +554,7 @@ static void uk_efi_setup_bootinfo_cmdl(struct ukplat_bootinfo *bi)
 	/* We can either have the command line provided by the user when this
 	 * very specific instance of the image was launched, in which case this
 	 * one takes priority, or we can have it provided through
-	 * CONFIG_KVM_BOOT_PROTO_EFI_STUB_CMDLINE_PATH as a path on the same
+	 * CONFIG_PLAT_GUEST_BOOT_PROTO_EFI_STUB_CMDLINE_PATH as a path on the same
 	 * device.
 	 */
 	if (uk_img_hndl->load_options && uk_img_hndl->load_options_size) {
@@ -545,8 +588,8 @@ static void uk_efi_setup_bootinfo_cmdl(struct ukplat_bootinfo *bi)
 
 static void uk_efi_setup_bootinfo_initrd(struct ukplat_bootinfo *bi)
 {
-	struct ukplat_memregion_desc mrd = {0};
 	struct uk_efi_ld_img_hndl *uk_img_hndl;
+	struct ukplat_memregion_desc mrd = {0};
 	char *initrd;
 	__sz len;
 	int rc;
@@ -556,9 +599,10 @@ static void uk_efi_setup_bootinfo_initrd(struct ukplat_bootinfo *bi)
 
 	uk_img_hndl = uk_efi_get_uk_img_hndl();
 
-	uk_efi_read_file(uk_img_hndl->device_handle,
-			 UK_EFI_ABS_FNAME(EFI_STUB_INITRD_FNAME),
-			 (char **)&initrd, &len);
+	if (uk_efi_read_file(uk_img_hndl->device_handle,
+			     UK_EFI_ABS_FNAME(EFI_STUB_INITRD_FNAME),
+			     (char **)&initrd, &len) != UK_EFI_SUCCESS)
+		return;
 
 	mrd.pbase = (__paddr_t)initrd;
 	mrd.vbase = (__vaddr_t)initrd;
@@ -588,6 +632,8 @@ static void uk_efi_setup_bootinfo_dtb(struct ukplat_bootinfo *bi)
 	uk_efi_read_file(uk_img_hndl->device_handle,
 			 UK_EFI_ABS_FNAME(EFI_STUB_DTB_FNAME),
 			 (char **)&dtb, &len);
+	if (!dtb)
+		return;
 
 	mrd.pbase = (__paddr_t)dtb;
 	mrd.vbase = (__vaddr_t)dtb;
@@ -602,6 +648,37 @@ static void uk_efi_setup_bootinfo_dtb(struct ukplat_bootinfo *bi)
 
 	bi->dtb = (__u64)dtb;
 }
+
+/* A machine without a CMOS RTC can only learn the date from the firmware, and
+ * the runtime services that report it stop being mapped once the stub exits
+ * boot services. Read it here and leave it for the platform clock. Only a
+ * platform whose clock backend has no other wall-clock source asks for it.
+ */
+#if CONFIG_PLAT_GUEST_X86_CLOCK_BACKEND
+static void uk_efi_setup_boot_wallclock(void)
+{
+	struct uk_efi_time t;
+	uk_efi_status_t status;
+
+	status = uk_efi_rs->get_time(&t, NULL);
+	if (status != UK_EFI_SUCCESS) {
+		uk_efi_pr_debug("Failed to read the firmware clock\n");
+
+		return;
+	}
+
+	ukplat_efi_boot_time.year = t.year;
+	ukplat_efi_boot_time.mon = t.month;
+	ukplat_efi_boot_time.day = t.day;
+	ukplat_efi_boot_time.hour = t.hour;
+	ukplat_efi_boot_time.min = t.minute;
+	ukplat_efi_boot_time.sec = t.second;
+	ukplat_efi_boot_time.tz_minutes = t.time_zone;
+	ukplat_efi_boot_time.valid = 1;
+}
+#else /* !CONFIG_PLAT_GUEST_X86_CLOCK_BACKEND */
+static void uk_efi_setup_boot_wallclock(void) { }
+#endif /* !CONFIG_PLAT_GUEST_X86_CLOCK_BACKEND */
 
 static void uk_efi_setup_bootinfo(void)
 {
@@ -618,6 +695,7 @@ static void uk_efi_setup_bootinfo(void)
 	uk_efi_setup_bootinfo_cmdl(bi);
 	uk_efi_setup_bootinfo_initrd(bi);
 	uk_efi_setup_bootinfo_dtb(bi);
+	uk_efi_setup_boot_wallclock();
 	uk_efi_setup_bootinfo_mrds(bi);
 
 	bi->efi_st = (__u64)uk_efi_st;
@@ -628,7 +706,7 @@ static void uk_efi_setup_bootinfo(void)
  */
 static void uk_efi_reset_attack_mitigation_enable(void)
 {
-#ifdef CONFIG_KVM_BOOT_PROTO_EFI_STUB_RST_ATK_MITIGATION
+#ifdef CONFIG_PLAT_GUEST_BOOT_EFI_RST_ATK_MITIGATION
 	/* The UTF-16 encoding of the "MemoryOverwriteRequestControl" string */
 	char var_name[] = "M\0e\0m\0o\0r\0y\0O\0v\0e\0r\0w\0r\0i\0t\0e\0R\0e"
 			  "\0q\0u\0e\0s\0t\0C\0o\0n\0t\0r\0o\0l\0";

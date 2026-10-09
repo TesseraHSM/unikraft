@@ -9,6 +9,10 @@
 #include <uk/pm.h>
 #include <uk/prio.h>
 
+#if CONFIG_LIBUKACPI
+#include <uk/acpi.h>
+#endif /* CONFIG_LIBUKACPI */
+
 /* The port used by QEMU by default for the isa-debug-exit device */
 #define QEMU_ISA_DEBUG_EXIT_PORT	0x501
 /* This corresponds to an 83 (41 << 1 | 1) return value from QEMU */
@@ -41,7 +45,27 @@ __isr static inline void _do_qemu_acpi_shutdown(void)
 	 * harmless if we're not running on QEMU, especially considering we're
 	 * already shutting down, so who cares if we crash.
 	 */
-	uk_arch_x86_64_outw(0x604, 0x2000);
+	__u16 pm1a_cnt = 0x604;
+
+#if CONFIG_LIBUKACPI
+	struct uk_acpi_fadt *fadt = uk_acpi_get_fadt();
+
+	/*
+	 * 0x604 is a QEMU constant. Other VMMs that present the same legacy PC
+	 * put PM1a_CNT elsewhere -- Hyper-V Generation 1 uses 0x404 -- so a
+	 * write to 0x604 there is silently dropped and the shutdown fails.
+	 * Prefer the port the firmware actually advertises in the FADT, and
+	 * keep the QEMU constant only as a fallback for builds without ACPI.
+	 *
+	 * SLP_TYPa is still assumed to be 0, which is correct for both QEMU and
+	 * Hyper-V Gen1. Reading the real value would mean interpreting the
+	 * \\_S5_ package in the DSDT, which is not worth an AML parser here.
+	 */
+	if (fadt && fadt->pm1a_ctlr_blk)
+		pm1a_cnt = (__u16)fadt->pm1a_ctlr_blk;
+#endif /* CONFIG_LIBUKACPI */
+
+	uk_arch_x86_64_outw(pm1a_cnt, 0x2000);
 }
 
 __isr static int qemu_exit(void)

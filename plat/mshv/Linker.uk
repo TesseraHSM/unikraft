@@ -1,0 +1,82 @@
+ifeq ($(CONFIG_MSHV_BOOT_PROTO_LXBOOT),y)
+MSHV_LDFLAGS-y += -Wl,--entry=_lxboot_entry
+else ifeq ($(CONFIG_MSHV_BOOT_PROTO_EFI_STUB),y)
+MSHV_LDFLAGS-y += -Wl,--entry=uk_efi_entry64
+MSHV_LDFLAGS-y += -Wl,-m,elf_x86_64
+endif
+
+##
+## Link image
+##
+ifneq ($(UK_IMAGE_NAME_OVERWRITE),)
+MSHV_IMAGE := $(BUILD_DIR)/$(UK_IMAGE_NAME_OVERWRITE)
+else
+MSHV_IMAGE := $(BUILD_DIR)/$(CONFIG_UK_NAME)_mshv-$(CONFIG_UK_ARCH)
+endif
+MSHV_DEBUG_IMAGE := $(MSHV_IMAGE).dbg
+MSHV_COMPILE_DB_IMAGE := $(BUILD_DIR)/compile_commands.json
+
+MSHV_LD_SCRIPT_FLAGS := $(addprefix -Wl$(comma)-dT$(comma),\
+			    $(UK_PLAT_MSHV_DEF_LDS))
+MSHV_LD_SCRIPT_FLAGS += $(addprefix -Wl$(comma)-T$(comma),\
+			   $(MSHV_LD_SCRIPT-y) $(EXTRA_LD_SCRIPT-y))
+
+$(MSHV_DEBUG_IMAGE): $(MSHV_ALIBS) $(MSHV_ALIBS-y) $(MSHV_OLIBS) \
+		       $(MSHV_OLIBS-y) \
+		       $(UK_ALIBS) $(UK_ALIBS-y) $(UK_OLIBS) $(UK_OLIBS-y) \
+		       $(MSHV_LD_SCRIPT-y) $(EXTRA_LD_SCRIPT-y) \
+		       $(UK_PLAT_MSHV_DEF_LDS) $(UK_LDEPS)
+	$(call build_cmd,LD,,$@,\
+	       $(LD) \
+			$(MSHV_LDFLAGS) $(MSHV_LDFLAGS-y) \
+			$(MSHV_OLIBS) $(MSHV_OLIBS-y) \
+			$(UK_OLIBS) $(UK_OLIBS-y) \
+			-Wl$(comma)--start-group \
+			$(MSHV_ALIBS) $(MSHV_ALIBS-y) \
+			$(UK_ALIBS) $(UK_ALIBS-y) \
+			-Wl$(comma)--end-group \
+			$(MSHV_LDLIBS) $(MSHV_LDLIBS-y) \
+			$(LDFLAGS) $(LDFLAGS-y) \
+			$(MSHV_LD_SCRIPT_FLAGS) \
+			-o $@)
+ifeq ($(CONFIG_OPTIMIZE_PIE),y)
+	$(call build_uk_reloc,$@)
+endif
+ifeq ($(CONFIG_LIBUKPCPUVAR),y)
+	$(call build_uk_pcpuvar,$@)
+endif
+
+$(MSHV_IMAGE): $(MSHV_IMAGE).dbg
+	$(call build_cmd,SCSTRIP,,$@,\
+		$(STRIP) -s \
+			$(SECT_STRIP_FLAGS) $(SECT_STRIP_FLAGS-y) \
+			$(MSHV_STRIPFLAGS) \
+			$< -o $@ 2>&1 | \
+			{ $(GREP) -Ev \
+				"Empty loadable segment detected|section.*lma.*adjusted to.*" || \
+				true; })
+	$(call build_bootinfo,$@)
+ifeq ($(CONFIG_MSHV_BOOT_PROTO_EFI_STUB),y)
+	$(call build_efi,$@)
+endif
+
+$(MSHV_IMAGE).sym: $(MSHV_DEBUG_IMAGE)
+	$(call build_cmd,NM,,$@, $(NM) -n $< > $@)
+
+$(MSHV_IMAGE).gz: $(MSHV_IMAGE)
+	$(call build_cmd,GZ,,$@, $(GZIP) -f -9 -c $< >$@)
+
+$(MSHV_COMPILE_DB_IMAGE): $(MSHV_IMAGE)
+	$(call build_compile_db,$(BUILD_DIR),$@)
+
+# register images to the build
+ifeq ($(CONFIG_PLAT_MSHV),y)
+UK_DEBUG_IMAGES-y                     += $(MSHV_DEBUG_IMAGE)
+UK_IMAGES-y                           += $(MSHV_IMAGE)
+UK_IMAGES-$(CONFIG_OPTIMIZE_SYMFILE)  += $(MSHV_IMAGE).sym
+UK_IMAGES-$(CONFIG_OPTIMIZE_COMPRESS) += $(MSHV_IMAGE).gz
+UK_IMAGES-y                           += $(MSHV_COMPILE_DB_IMAGE)
+endif
+
+# ...for cleaning:
+LIBMSHVPLAT_CLEAN += $(call build_clean,$(MSHV_DEBUG_IMAGE).bootinfo)

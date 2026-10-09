@@ -1,0 +1,203 @@
+menuconfig PLAT_MSHV
+	bool "MSHV guest (Generation 2)"
+	default n
+	depends on ARCH_X86_64
+	imply LIBUKPM
+	select LIBUKDEBUG
+	select LIBUKBOOT
+	select LIBUKBITOPS
+	select LIBUKALLOC
+	select LIBUKTIMECONV
+	select LIBNOLIBC if !HAVE_LIBC
+	select LIBUKATOMIC
+	select ELF64_TO_32
+	select LIBUKRELOC if OPTIMIZE_PIE
+	select OPTIMIZE_PIE
+	select HAVE_PAGING
+	select LIBUKPAGING
+	select LIBUKACPI
+	select LIBUKPLAT_NATIVE_PAL
+	select LIBUKPLAT_NATIVE_PAGING if LIBUKPAGING
+	select LIBUKPLAT_NATIVE_LCPU_PM if LIBUKLCPU
+	select HAVE_INTCTLR
+	select HAVE_PCI
+	select HAVE_APIC
+	select LIBUKINTCTLR_APIC
+	select LIBUKINTCTLR_XPIC
+	select LIBUKINTCTLR_XPIC_NO_8259
+	select HAVE_IBMPC_NS16550
+	select HAVE_MSHV
+	imply LIBNS16550 if LIBUKCONSOLE
+	imply LIBNS16550_COM1 if LIBUKCONSOLE
+	imply LIBNS16550_EARLY_CONSOLE if LIBUKCONSOLE
+	imply LIBUKRANDOM_LCPU if LIBUKRANDOM
+	help
+		Create an image that boots on Microsoft MSHV Generation 2
+		virtual machines, and therefore also on Azure.
+
+		MSHV is a hypervisor in its own right rather than a way of
+		running KVM, so it is selected here rather than from inside
+		another platform. Generation 2 is UEFI-based and has no BIOS,
+		i8254 PIT, 8259 PIC, CMOS RTC, PS/2 controller or VGA adapter.
+		Time is taken from the MSHV synthetic MSRs and interrupts
+		are delivered through the local APIC. The only legacy device
+		assumed present is a 16550-compatible COM1 at 0x3f8.
+
+if (PLAT_MSHV)
+
+choice
+	prompt "Boot protocol"
+	default MSHV_BOOT_PROTO_EFI_STUB
+
+config MSHV_BOOT_PROTO_EFI_STUB
+	bool "EFI stub"
+	depends on OPTIMIZE_PIE
+	select LIBUKEFI
+	help
+		Boot as a PE/COFF EFI application, which the MSHV UEFI
+		firmware loads directly from the EFI system partition. This
+		is how an ordinary Generation 2 virtual machine starts.
+
+config MSHV_BOOT_PROTO_LXBOOT
+	bool "Lxboot"
+	help
+		Boot through the Linux 64-bit boot protocol, which is how a
+		guest launched straight from an IGVM file or through the
+		MSHV Linux direct loader is entered. There is no firmware
+		in front of the guest on this path.
+
+comment "Hint: EFI stub depends on OPTIMIZE_PIE"
+	depends on !OPTIMIZE_PIE
+endchoice
+
+if MSHV_BOOT_PROTO_EFI_STUB
+
+config MSHV_BOOT_PROTO_EFI_STUB_CMDLINE_FNAME
+	string "Name of the command line arguments file"
+	default "$(UK_NAME).cmdl"
+
+config MSHV_BOOT_PROTO_EFI_STUB_INITRD_FNAME
+	string "Name of the initial RAM disk file"
+	default "$(UK_NAME).initrd"
+
+config MSHV_BOOT_PROTO_EFI_STUB_DTB_FNAME
+	string "Name of the Devicetree Blob file"
+	default "$(UK_NAME).dtb"
+
+config MSHV_BOOT_PROTO_EFI_STUB_DEBUG
+	bool "EFI stub diagnostic messages"
+	default n
+	help
+		Print diagnostic and fatal-error messages from the EFI stub
+		through the UEFI console (ConOut), before boot services are
+		exited. Without this, an early EFI stub failure resets the
+		machine silently, since the Unikraft console is not up yet.
+
+config MSHV_BOOT_PROTO_EFI_STUB_RST_ATK_MITIGATION
+	bool "TCG Reset Attack Mitigation"
+	default n
+	help
+		Enable Trusted Computing Group's Reset Attack Mitigation.
+		Whenever a machine shuts down or reboots, due to lack of
+		electric charge, the contents of RAM may dissipate after a short
+		amount of time. However this may be enough for an attacker to
+		quickly boot again into a custom program and dump memory
+		contents. Thus, by using this, the OS instructs POST BIOS to
+		overwrite memory contents before continuing to boot into the
+		rest of the BIOS code.
+
+endif
+
+endif
+
+config MSHV_SYNIC
+	bool "MSHV synthetic interrupt controller"
+	depends on PLAT_MSHV
+	select LIBUKALLOC
+	select LIBUKPAGING
+	help
+		Bring up the hypercall page and the synthetic interrupt
+		controller (SynIC).
+
+		This is the substrate the VMBus transport needs in order to
+		post messages to the host and to be signalled by it. Nothing
+		in the boot path requires it, so leave it off unless a VMBus
+		device such as synthetic networking is configured in.
+
+config MSHV_VMBUS_SINT
+	int "Synthetic interrupt source VMBus messages arrive on"
+	default 2
+	depends on ARCH_X86_64
+	help
+		The synthetic interrupt source the guest listens on for VMBus
+		messages and channel events before any route has been chosen.
+
+		The protocol names source 2 and that is what an ordinary guest
+		uses. A host that redirects a partition's control plane to a
+		higher privilege level delivers on source 7 instead; the bus
+		switches to it by itself when it tries that route, so this only
+		sets the starting point.
+
+config MSHV_SHARED_GPA_PAGES
+	int "Pages of host visible memory to carve out above described RAM"
+	default 0
+	depends on ARCH_X86_64
+	help
+		Number of pages to allocate every buffer the host reads or
+		writes from, instead of taking them from the heap. Zero uses
+		the heap, which is what an ordinary guest wants.
+
+		A VTL2 payload needs this. The loader applies VTL protection
+		to the whole of the memory it describes to the payload, so
+		the host cannot acquire access to any page inside it: a VMBus
+		channel whose ring buffers live there is refused with
+		STATUS_VID_VTL_ACCESS_DENIED. Memory beyond the described
+		region carries no such protection and belongs to VTL0, which
+		under this payload is empty, so the host can map it.
+
+		The region is located at run time, immediately above the
+		highest address the boot memory map accounts for, so nothing
+		here depends on how much memory the IGVM described. Only make
+		sure the VM is assigned more memory than the IGVM describes,
+		by at least this many pages.
+
+		The demand is bounded by the device topology: the NetVSC
+		receive and sending buffers dominate it at a megabyte each,
+		with one ring pair per channel and a handful of control pages
+		behind them.
+
+config MSHV_SNP_RESTRICTED_INJECTION
+	bool "Experimental SNP restricted injection"
+	default n
+	depends on MSHV_SYNIC && X86_SNP_VC_EARLY
+	depends on LIBUKINTCTLR_XPIC && LIBUKINTCTLR_APIC
+	depends on LIBUKINTCTLR_XPIC_NO_8259 && !HAVE_SMP
+	select LIBUKINTCTLR
+	help
+		Enable doorbell-based interrupt delivery for a single-CPU direct
+		SNP guest authored with restricted injection. Unsupported NMI and
+		machine-check events terminate the guest. Recoverable faults may
+		defer delivery until a cooperative yield or masked halt; the host
+		must re-enter on halt when a doorbell event is pending.
+		Normal-injection launches remain inert. Leave disabled for
+		existing profiles.
+
+config MSHV_IGVM_MEMMAP
+	bool "Take the memory map from the IGVM loader's parameter area"
+	default y
+	depends on PLAT_GUEST_BOOT_PROTO_LXBOOT
+	depends on ARCH_X86_64
+	help
+		Prefer the memory map MSHV writes into the IGVM parameter
+		area over the e820 table carried in the boot parameters.
+
+		An IGVM file names its RAM when it is generated, so its e820
+		table describes the VM the file was built for rather than the
+		VM it is running on. The parameter area is filled at load time
+		and is therefore authoritative.
+
+		Turn this off for any loader that does not populate that area.
+		MSHV's Linux direct loader is one: it places EFI stub data
+		where the parameter area would be, so probing it there would
+		read unrelated bytes as a memory map. Its e820 table is built
+		from the VM's real topology and is the right source.

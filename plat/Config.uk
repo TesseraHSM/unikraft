@@ -58,7 +58,153 @@ config FPSIMD
 #        This warning will be removed once we have restructured the menu to
 #        only allow a single platform (including external platforms).
 comment "Warning: Selecting multiple platforms is unsupported!"
-	depends on PLAT_KVM && PLAT_XEN
+	depends on (PLAT_KVM && PLAT_XEN) || (PLAT_KVM && PLAT_MSHV) || \
+		   (PLAT_XEN && PLAT_MSHV)
+
+# Boot protocol as the shared guest bootstrap code sees it. Each platform
+# keeps its own user-facing boot protocol choice and sets these, so that the
+# shared loaders never read another platform's option.
+config PLAT_GUEST_BOOT_PROTO_MULTIBOOT
+	bool
+	default y if KVM_BOOT_PROTO_MULTIBOOT
+
+config PLAT_GUEST_BOOT_PROTO_LXBOOT
+	bool
+	default y if KVM_BOOT_PROTO_LXBOOT
+	default y if MSHV_BOOT_PROTO_LXBOOT
+
+config PLAT_GUEST_BOOT_PROTO_EFI_STUB
+	bool
+	default y if KVM_BOOT_PROTO_EFI_STUB
+	default y if MSHV_BOOT_PROTO_EFI_STUB
+
+config PLAT_GUEST_BOOT_EFI_CMDLINE_FNAME
+	string
+	default KVM_BOOT_PROTO_EFI_STUB_CMDLINE_FNAME if PLAT_KVM
+	default MSHV_BOOT_PROTO_EFI_STUB_CMDLINE_FNAME if PLAT_MSHV
+
+config PLAT_GUEST_BOOT_EFI_INITRD_FNAME
+	string
+	default KVM_BOOT_PROTO_EFI_STUB_INITRD_FNAME if PLAT_KVM
+	default MSHV_BOOT_PROTO_EFI_STUB_INITRD_FNAME if PLAT_MSHV
+
+config PLAT_GUEST_BOOT_EFI_DTB_FNAME
+	string
+	default KVM_BOOT_PROTO_EFI_STUB_DTB_FNAME if PLAT_KVM
+	default MSHV_BOOT_PROTO_EFI_STUB_DTB_FNAME if PLAT_MSHV
+
+config PLAT_GUEST_BOOT_EFI_DEBUG
+	bool
+	default KVM_BOOT_PROTO_EFI_STUB_DEBUG if PLAT_KVM
+	default MSHV_BOOT_PROTO_EFI_STUB_DEBUG if PLAT_MSHV
+
+config PLAT_GUEST_BOOT_EFI_RST_ATK_MITIGATION
+	bool
+	default KVM_BOOT_PROTO_EFI_STUB_RST_ATK_MITIGATION if PLAT_KVM
+	default MSHV_BOOT_PROTO_EFI_STUB_RST_ATK_MITIGATION if PLAT_MSHV
+
+# Set by whichever platform actually implements the MSHV guest interface.
+# Shared code and drivers ask for the interface, not for a platform.
+config HAVE_MSHV
+	bool
+
+# Set by a platform whose machine supplies its own monotonic counter and
+# timer, so that the shared x86 clock calls that backend instead of driving
+# the PC devices.
+config PLAT_GUEST_X86_CLOCK_BACKEND
+	bool
+	default y if HAVE_MSHV
+
+# Set by whichever platform implements the MSHV synthetic interrupt
+# controller. The VMBus transport and everything above it depend on the
+# service, never on the platform that happens to provide it.
+config HAVE_MSHV_SYNIC
+	bool
+	default y if MSHV_SYNIC
+
+# Set by a platform that implements host-visible guest memory and the guest
+# physical addresses that go with it, which is how a device on an isolated
+# guest is given rings and payloads it can reach.
+config HAVE_SNP_SHARED_DMA
+	bool
+	default y if HAVE_MSHV_SYNIC
+
+# Set by a platform that can perform a device MMIO access on behalf of an
+# isolated guest, where an ordinary load or store does not reach the device.
+config HAVE_SNP_CONFIDENTIAL_MMIO
+	bool
+	default y if HAVE_MSHV_SYNIC
+
+menu "Architectural SEV-SNP support"
+	depends on ARCH_X86_64
+
+config X86_SNP_VC_EARLY
+	bool "Handle #VC exceptions during early boot on SEV-SNP"
+	depends on PLAT_GUEST_BOOT_PROTO_LXBOOT
+	help
+		Install a GDT, TSS and IDT that service the CPUID exits taken
+		by lcpu_start64 on an SEV-SNP guest that runs with no
+		paravisor.
+
+		Under SEV-SNP a CPUID is an NAE event: it does not execute,
+		it raises #VC and the guest is expected to obtain the answer
+		from the hypervisor itself. A guest booted from an IGVM file
+		with a paravisor has that done for it. One booted straight
+		into VTL0 does not, so the first CPUID triple faults.
+
+		The handler answers over the GHCB MSR protocol, which needs
+		no GHCB page and no shared memory and is therefore usable
+		before any allocator exists. It runs on an interrupt stack
+		because lcpu_start64 scales the stack pointer by the APIC id,
+		leaving it zero on the boot processor.
+
+		Whether a machine is an SNP guest at all is decided at run
+		time, so this says only that the code is built in.
+
+config X86_SNP_EARLY_CON
+	bool "Early console over the GHCB on SEV-SNP"
+	depends on PLAT_GUEST_BOOT_PROTO_LXBOOT
+	help
+		Drive COM1 directly through the GHCB so that early boot can
+		report on itself.
+
+		A guest with a paravisor can leave a message in the VTL2
+		error page, but that page is only ever collected because the
+		host watches VTL2 for a triple fault. A guest booted straight
+		into VTL0 has no VTL2, so nothing reads it, and a failure
+		before the console comes up is indistinguishable from any
+		other failure.
+
+		This establishes a shared page for use as a GHCB and hands
+		port writes to the host with VMGEXIT. Setting the page up
+		needs only the GHCB MSR, which is not intercepted, so the
+		console is available before the #VC handler is installed and
+		can be used from inside it.
+
+config X86_SNP_MMIO_MAPPED
+	bool "Serve device MMIO taken as a nested page fault"
+	default n
+	depends on X86_SNP_VC_EARLY
+	depends on HAVE_SNP_CONFIDENTIAL_MMIO
+	help
+		Emulate the load or store that raised a nested page fault when
+		it names a registered device mapping, so that a driver can
+		reach a BAR through an ordinary pointer.
+
+		Without this, only CPUID, port I/O, MSR and VMMCALL exits are
+		served and a device register can be reached only through the
+		explicit GHCB MMIO call. A driver that lives outside this
+		kernel cannot be expected to make that call, which is what
+		this is for.
+
+		Only ranges an owner has registered are served. Every other
+		nested page fault still stops the guest, and so does an access
+		this decoder does not recognise: serving a misread instruction
+		would move the wrong bytes without saying so.
+
+		Code that takes such a fault must be built without the red
+		zone, because the processor pushes the exception frame over it.
+endmenu
 
 config HAVE_SHUTDOWN_DISPATCHER
 	bool

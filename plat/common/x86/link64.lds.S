@@ -26,7 +26,7 @@
 #include <uk/arch/limits.h> /* for __PAGE_SIZE */
 #include <uk/plat/common/common.lds.h>
 
-#define BASE_ADDR 0x100000
+#define BASE_ADDR 0x400000
 
 PHDRS
 {

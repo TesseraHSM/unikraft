@@ -1,0 +1,79 @@
+##
+## MSHV platform registration
+##
+$(eval $(call addplat_s,mshv,$(CONFIG_PLAT_MSHV)))
+
+##
+## MSHV platform library registration
+##
+$(eval $(call addplatlib,mshv,libmshvplat))
+
+##
+## Platform library definitions
+##
+LIBMSHVPLAT_ASINCLUDES-y     += -I$(UK_PLAT_COMMON_BASE)/include
+LIBMSHVPLAT_CINCLUDES-y      += -I$(UK_PLAT_COMMON_BASE)/include
+LIBMSHVPLAT_CINCLUDES-y      += -I$(UK_PLAT_DRIVERS_BASE)/include
+
+LIBMSHVPLAT_ASFLAGS          += -DMSHVPLAT -DUK_USE_SECTION_SEGMENTS
+LIBMSHVPLAT_CFLAGS           += -DMSHVPLAT -DUK_USE_SECTION_SEGMENTS
+LIBMSHVPLAT_CXXFLAGS         += -DMSHVPLAT -DUK_USE_SECTION_SEGMENTS
+
+##
+## Default Linker script
+##
+UK_PLAT_MSHV_DEF_LDS         := $(UK_PLAT_COMMON_BASE)/x86/link64.lds.S
+
+##
+## Shared guest bootstrap
+##
+ifeq ($(CONFIG_HAVE_SYSCALL),y)
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/syscall.S|common
+endif
+ifeq ($(CONFIG_MSHV_BOOT_PROTO_LXBOOT),y)
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/lxboot.S|x86
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/lxboot.c|common
+ifeq ($(CONFIG_X86_SNP_VC_EARLY),y)
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/snp_vc_early.S|x86
+endif
+ifeq ($(CONFIG_X86_SNP_EARLY_CON),y)
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/snp_dbg.S|x86
+endif
+else ifeq ($(CONFIG_MSHV_BOOT_PROTO_EFI_STUB),y)
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/efi_entry64.S|x86
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/efi_post.c|isr
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/efi.c|isr
+endif
+# The SNP secrets page is reached the same way whichever protocol booted the
+# payload, and the SNP support code calls into it unconditionally, so it is
+# not tied to one entry path.
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/snp_secrets.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/pagetable64.S|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/cpu_vectors_x86_64.S|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/setup.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/lcpu_start.S|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/tscclock.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/tscclock_pc.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/x86/time.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/guest_memory.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/memory.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/bootinfo.c|common
+LIBMSHVPLAT_SRCS-$(CONFIG_LIBFDT) += $(UK_PLAT_COMMON_BASE)/bootinfo_fdt.c|common
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_COMMON_BASE)/bootinfo.lds.S|common
+# Built as interrupt-safe code: it runs from inside #VC, where the extended
+# register file belongs to whatever was interrupted and is not saved.
+LIBMSHVPLAT_SRCS-$(CONFIG_X86_SNP_MMIO_MAPPED) += $(UK_PLAT_COMMON_BASE)/x86/snp_vc_mmio.c|isr
+
+##
+## The MSHV guest interface itself
+##
+LIBMSHVPLAT_SRCS-y += $(LIBMSHVPLAT_BASE)/x86/mshv.c
+LIBMSHVPLAT_SRCS-y += $(LIBMSHVPLAT_BASE)/x86/tscclock.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/mshv_synic.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/mshv_shmem.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/mshv_ghcb.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/mshv_hv.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/mshv_snp.c
+LIBMSHVPLAT_SRCS-$(CONFIG_MSHV_SYNIC) += $(LIBMSHVPLAT_BASE)/x86/vectors.S
+
+LIBMSHVPLAT_SRCS-y += $(UK_PLAT_MSHV_DEF_LDS)

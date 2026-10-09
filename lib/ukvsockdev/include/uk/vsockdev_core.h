@@ -179,6 +179,28 @@ typedef int (*uk_vsockdev_destroy_func)(struct uk_vsockdev *dev,
 					struct uk_vsock *sock);
 
 /**
+ * Optional driver callback telling the transport that the application has
+ * taken data out of the socket's receive buffer.
+ *
+ * A transport whose flow control lives in a buffer shared with the peer
+ * cannot accept more data than the socket buffer can hold, and has to leave
+ * the rest where it is so the peer stops sending. Nothing else would ever
+ * tell it that the application has made room again, so without this the
+ * connection stalls with data still in flight. A transport that carries its
+ * own credit protocol does not need it and may leave this NULL.
+ *
+ * Called after the bytes have been consumed, with no socket buffer lock
+ * held. It must not block.
+ *
+ * @param dev The vsock device
+ * @param sock The socket the application read from
+ * @param size How many bytes were consumed
+ * @return 0 on success, negative errno code on error
+ */
+typedef int (*uk_vsockdev_rx_consumed_func)(struct uk_vsockdev *dev,
+					    struct uk_vsock *sock, __sz size);
+
+/**
  * Driver operation callbacks structure.
  * Contains all the callback functions that drivers must implement
  * to provide vsock functionality.
@@ -193,6 +215,8 @@ struct uk_vsockdev_ops {
 	uk_vsockdev_shutdown_func shutdown;
 	uk_vsockdev_reset_func reset;
 	uk_vsockdev_destroy_func destroy;
+	/** Optional; see uk_vsockdev_rx_consumed_func */
+	uk_vsockdev_rx_consumed_func rx_consumed;
 };
 
 /**

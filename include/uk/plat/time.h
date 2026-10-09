@@ -44,6 +44,15 @@ void ukplat_time_init(void);
 void ukplat_time_fini(void);
 __u32 ukplat_time_get_irq(void);
 
+/**
+ * Number of platform timer interrupts taken so far, saturating at UINT64_MAX.
+ *
+ * Reported by the confidential-guest diagnostics, where a stalled count is
+ * how a guest whose timer never fires makes itself known. Counted only where
+ * a consumer exists, so this resolves at link time.
+ */
+__u64 ukplat_time_irq_count(void);
+
 __nsec ukplat_time_get_ticks(void);
 __nsec ukplat_monotonic_clock(void);
 __nsec ukplat_wall_clock(void);

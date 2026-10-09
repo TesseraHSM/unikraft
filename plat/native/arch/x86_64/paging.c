@@ -18,16 +18,48 @@
 #include <uk/plat/native/paging.h>
 #include <uk/plat/native/page.h>
 
+#define X86_MSR_AMD64_SEV		0xc0010131
+#define X86_MSR_AMD64_SEV_ENABLED	0x1
+#define X86_CPUID_SEV_CBIT_POS_MASK	0x3f
+
+/* The encryption bit, as a mask, or zero where memory is not encrypted.
+ *
+ * Where firmware has turned memory encryption on, a mapping is only private
+ * if its page table entry says so, and an access made without the bit is made
+ * in the clear against a page the hardware knows to be private, which faults.
+ * Every entry the guest builds therefore has to carry it. The bit sits inside
+ * the entry's address field, so it also has to be masked back out whenever an
+ * address is read out of an entry.
+ */
+__u64 uk_plat_native_pte_cbit;
+
 int uk_plat_native_paging_init(void)
 {
 	__u32 eax, ebx, ecx, edx;
 	__u32 max_addr_bit;
+	__u32 max_ext_leaf;
 	__u64 efer;
 
 	/* Check for availability of extended features */
 	uk_arch_x86_64_cpuid(0x80000000, 0, &eax, &ebx, &ecx, &edx);
 	if (eax < 0x80000008)
 		return -ENOTSUP;
+
+	max_ext_leaf = eax;
+
+	/* The position of the encryption bit is not architectural, so it is
+	 * read from the same leaf that reports the feature, and only once the
+	 * status register confirms encryption is actually active. This has to
+	 * happen before the first page table entry is built below.
+	 */
+	if (max_ext_leaf >= 0x8000001f &&
+	    (uk_arch_x86_64_rdmsrl(X86_MSR_AMD64_SEV) &
+	     X86_MSR_AMD64_SEV_ENABLED)) {
+		uk_arch_x86_64_cpuid(0x8000001f, 0, &eax, &ebx, &ecx, &edx);
+		uk_plat_native_pte_cbit =
+			1ULL << (ebx & X86_CPUID_SEV_CBIT_POS_MASK);
+
+	}
 
 	/* Check for 1GiB page support. We assume 64-bit and NX support */
 	uk_arch_x86_64_cpuid(0x80000001, 0, &eax, &ebx, &ecx, &edx);
@@ -42,6 +74,7 @@ int uk_plat_native_paging_init(void)
 
 	/* Enable the NX bit */
 	efer = uk_arch_x86_64_rdmsrl(UK_ARCH_X86_64_MSR_EFER);
+
 	efer |= UK_ARCH_X86_64_EFER_NXE;
 	uk_arch_x86_64_wrmsrl(UK_ARCH_X86_64_MSR_EFER, efer);
 

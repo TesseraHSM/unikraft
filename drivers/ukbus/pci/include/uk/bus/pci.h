@@ -159,7 +159,14 @@ struct pci_device {
 
 	unsigned long base;
 	unsigned long irq;
+	__u64 bar[6];
+	__u64 bar_size[6];
 };
+
+int pci_config_read(const struct pci_address *addr, unsigned int where,
+		    unsigned int size, __u32 *value);
+int pci_config_write(const struct pci_address *addr, unsigned int where,
+		     unsigned int size, __u32 value);
 
 
 #define PCI_REGISTER_DRIVER(b)                  \
@@ -180,6 +187,7 @@ struct pci_device {
 
 /* Do not use this function directly: */
 void _pci_register_driver(struct pci_driver *drv);
+void _pci_register_device(struct pci_device *dev);
 
 struct pci_bus_handler {
 	struct uk_bus b;
@@ -187,7 +195,6 @@ struct pci_bus_handler {
 	struct uk_list_head drv_list;  /**< List of PCI drivers */
 	struct uk_list_head dev_list;  /**< List of PCI devices */
 };
-static struct pci_bus_handler ph __unused;
 
 #define PCI_INVALID_ID              (0xFFFF)
 #define PCI_DEVICE_ID_MASK          (0xFFFF)

@@ -1,2 +1,6 @@
 uk_intctlr_probe
 uk_intctlr_xpic_handle_irq
+uk_intctlr_apic_enable
+uk_intctlr_apic_remap
+uk_intctlr_apic_mode
+uk_intctlr_apic_base

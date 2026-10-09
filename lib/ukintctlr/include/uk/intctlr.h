@@ -143,6 +143,11 @@ void uk_intctlr_irq_unmask(unsigned int irq);
  */
 int uk_intctlr_irq_alloc(unsigned int *irqs, __sz count);
 
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+/** Whether an IRQ has a registered handler. Called with interrupts disabled. */
+__isr int uk_intctlr_irq_is_registered(__u32 irq);
+#endif
+
 /**
  * Free previously allocated IRQs
  *

@@ -285,6 +285,7 @@ END(lcpu_start32)
 .code64
 .section .text.boot.64
 ENTRY(lcpu_start64)
+
 	/* Request basic CPU features and APIC ID
 	 * TODO: This APIC ID is limited to 256. Better get from leaf 0x1f
 	 */
@@ -306,8 +307,10 @@ ENTRY(lcpu_start64)
 	/* Put CPU into init state */
 	movl	$UK_LCPU_STATE_INIT, UK_LCPU_STATE_OFFSET(%rbp)
 
+
 	/* Enable FPU and SSE */
 	LCPU_ENABLE_FPU_SSE
+
 
 #if (__AVX__ || CONFIG_HAVE_X86PKU)
 	/* Enable XSAVE feature */
@@ -317,6 +320,7 @@ ENTRY(lcpu_start64)
 no_xsave:
 #endif /* !__AVX__ && !CONFIG_HAVE_X86PKU */
 
+
 #if __AVX__
 	/* Enable AVX */
 	LCPU_ENABLE_AVX fail
@@ -325,10 +329,12 @@ no_xsave:
 no_avx:
 #endif /* !__AVX__ */
 
+
 	/* Request extended CPU features */
 	movl	$7, %eax
 	xorl	%ecx, %ecx
 	cpuid
+
 
 #if __FSGSBASE__
 	/* Enable FS and GS base */
@@ -356,6 +362,7 @@ no_fsgsbase:
 	wrmsr
 0:
 #endif /* !__FSGSBASE__ */
+
 
 #if CONFIG_HAVE_X86PKU
 	/* Enable memory protection keys (PKU) */
@@ -392,6 +399,7 @@ no_avx512:
 	/* Arguments for entry function
 	 * arg0 @ RDI = this CPU, arg1 @ RSI = boot parameters (if available)
 	 */
+
 	jmp	*%rax
 
 .pushsection .rodata

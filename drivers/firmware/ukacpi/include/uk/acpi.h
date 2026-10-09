@@ -39,6 +39,21 @@ struct uk_acpi_rsdp {
 struct uk_acpi_fadt *uk_acpi_get_fadt(void);
 
 /**
+ * Find a validated ACPI system-description table by signature.
+ *
+ * @param signature
+ *   Four-byte ACPI table signature
+ * @param index
+ *   Zero-based occurrence when firmware publishes more than one table with
+ *   the same signature
+ *
+ * @return Table pointer on success, NULL if absent or invalid.
+ */
+const struct uk_acpi_sdt_hdr *
+uk_acpi_get_table(const char signature[UK_ACPI_SDT_SIG_LEN],
+		  unsigned int index);
+
+/**
  * Detect ACPI version and fetch ACPI tables.
  *
  * @return 0 on success, -errno otherwise.

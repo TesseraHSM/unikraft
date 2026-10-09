@@ -74,15 +74,19 @@ int uk_acpi_madt_fill_cpu_idmap(void)
 			continue;
 		}
 
-		uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_id) = cpu_id;
-		uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_idx) = idx;
-		idx++;
-
-		/* Ignore cores that exceed max configured value */
-		if (unlikely(idx == CONFIG_UKPLAT_CPU_MAXCOUNT)) {
+		/* Ignore cores that exceed max configured value. This must be
+		 * checked before writing, as uk_pcpuvar_lval() performs
+		 * unchecked pointer arithmetic and an index beyond the last
+		 * per-CPU copy would corrupt unrelated memory.
+		 */
+		if (unlikely(idx >= CONFIG_UKPLAT_CPU_MAXCOUNT)) {
 			uk_pr_warn("Maximum number of cores exceeded.\n");
 			break;
 		}
+
+		uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_id) = cpu_id;
+		uk_pcpuvar_lval(idx, uk_pcpuvar_cpu_idx) = idx;
+		idx++;
 	}
 	UK_ASSERT(bsp_found);
 

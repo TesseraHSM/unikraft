@@ -11,3 +11,12 @@ config LIBUKINTCTLR_APIC
 	depends on (HAVE_INTCTLR && ARCH_X86_64)
 	depends on HAVE_APIC
 	select LIBUKINTCTLR_PIC
+
+config LIBUKINTCTLR_XPIC_NO_8259
+	bool
+	depends on LIBUKINTCTLR_XPIC
+	help
+		Set by platforms whose machine model does not include an 8259
+		PIC, such as Hyper-V Generation 2 virtual machines. The 8259
+		is then neither initialised nor acknowledged, and interrupt
+		management is left entirely to the APIC.

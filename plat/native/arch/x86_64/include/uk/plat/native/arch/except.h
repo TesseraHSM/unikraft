@@ -202,13 +202,24 @@ uk_plat_native_except_irq_ctx_set_irq(
  */
 __isr int uk_plat_native_except_init(void);
 
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+__isr void uk_plat_native_hv_enable_irq(void);
+__isr void uk_plat_native_hv_drain_masked(void);
+__isr struct uk_plat_native_regs *
+uk_plat_native_hv_stack_enter(struct uk_plat_native_regs *regs);
+#endif
+
 /**
  * Enable x86_64 interrupts (STI instruction).
  * Sets RFLAGS.IF, allowing maskable hardware interrupts.
  */
 __isr static inline void uk_plat_native_enable_irq(void)
 {
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	uk_plat_native_hv_enable_irq();
+#else
 	uk_arch_x86_64_enable_irq();
+#endif
 }
 
 /**
@@ -247,7 +258,7 @@ __isr static inline unsigned long uk_plat_native_save_irqf(void)
 __isr static inline void uk_plat_native_restore_irqf(unsigned long flags)
 {
 	if (flags)
-		uk_arch_x86_64_enable_irq();
+		uk_plat_native_enable_irq();
 	else
 		uk_arch_x86_64_disable_irq();
 }
@@ -266,7 +277,12 @@ __isr static inline int uk_plat_native_irqs_disabled(void)
  * Handle pending interrupts (no-op on x86_64).
  * x86_64 delivers pending interrupts automatically when RFLAGS.IF is set.
  */
-static inline void uk_plat_native_irqs_handle_pending(void) { }
+static inline void uk_plat_native_irqs_handle_pending(void)
+{
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	uk_plat_native_hv_drain_masked();
+#endif
+}
 
 /**
  * Get base of exception stack for current CPU.

@@ -38,7 +38,7 @@
 #define __PLAT_KVM_X86_LCPU_HELPERS_S__
 
 #include <uk/arch/x86_64.h>
-#include <kvm-x86/serial_console.h>
+#include <x86/serial_console.h>
 #include <uk/lcpu.h>
 
 /**

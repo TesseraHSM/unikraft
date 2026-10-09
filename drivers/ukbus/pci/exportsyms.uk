@@ -1,1 +1,3 @@
 _pci_register_driver
+pci_config_read
+pci_config_write

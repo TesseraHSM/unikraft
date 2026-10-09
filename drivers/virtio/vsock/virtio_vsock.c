@@ -1277,6 +1277,9 @@ static int virtio_vsock_create(struct uk_vsockdev *vd, int sock_type,
 	uk_pr_debug("vd=%p sock_type=%d protocol=%d\n",
 		    vd, sock_type, protocol);
 
+	/* Creation flags belong to the POSIX descriptor, not the transport type. */
+	sock_type &= ~(SOCK_NONBLOCK | SOCK_CLOEXEC);
+
 	if (unlikely(protocol != 0)) {
 		uk_pr_debug("unsupported protocol=%d\n", protocol);
 		return -EPROTONOSUPPORT;
@@ -1811,7 +1814,13 @@ static int virtio_vsockdev_setup_queues(struct virtio_vsockdev *vvd)
 	 */
 
 	/* TODO: Make nb_desc configurable somehow? (uklibparam?) */
-	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_RX, 0,
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	/* Bound ring and bounce storage for small confidential guests. */
+	nb_desc = MIN(vvd->queues[VIRTIO_VSOCKDEV_QUEUE_RX].max_nb_desc, 64);
+#else
+	nb_desc = 0;
+#endif
+	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_RX, nb_desc,
 					 virtio_vsockdev_recv_event);
 	if (unlikely(rc)) {
 		uk_pr_debug("RX queue setup failed: %d\n", rc);
@@ -1819,7 +1828,10 @@ static int virtio_vsockdev_setup_queues(struct virtio_vsockdev *vvd)
 	}
 	uk_pr_debug("RX queue set up\n");
 
-	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_TX, 0,
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	nb_desc = MIN(vvd->queues[VIRTIO_VSOCKDEV_QUEUE_TX].max_nb_desc, 64);
+#endif
+	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_TX, nb_desc,
 					 __NULL);
 	if (unlikely(rc)) {
 		uk_pr_debug("TX queue setup failed: %d\n", rc);
@@ -1827,7 +1839,10 @@ static int virtio_vsockdev_setup_queues(struct virtio_vsockdev *vvd)
 	}
 	uk_pr_debug("TX queue set up\n");
 
-	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_EVENT, 0,
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	nb_desc = MIN(vvd->queues[VIRTIO_VSOCKDEV_QUEUE_EVENT].max_nb_desc, 64);
+#endif
+	rc = virtio_vsockdev_setup_queue(vvd, VIRTIO_VSOCKDEV_QUEUE_EVENT, nb_desc,
 					 virtio_vsockdev_evq_event);
 	if (unlikely(rc)) {
 		uk_pr_debug("event queue setup failed: %d\n", rc);

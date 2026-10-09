@@ -285,6 +285,7 @@ int uk_paging_pt_init(struct uk_pagetable *pt, __paddr_t start, __sz len)
 			  UK_PAL_PAGE_LEVEL, NULL);
 	if (unlikely(rc))
 		return rc;
+
 #endif /* CONFIG_LIBUKPAGING_DIRECTMAP */
 
 #ifdef CONFIG_LIBUKPAGING_STATS
@@ -1471,6 +1472,8 @@ static inline unsigned long bootinfo_to_page_attr(__u16 flags)
 		prot |= UK_PAL_PAGE_ATTR_PROT_WRITE;
 	if (flags & UKPLAT_MEMRF_EXECUTE)
 		prot |= UK_PAL_PAGE_ATTR_PROT_EXEC;
+	if (flags & UKPLAT_MEMRF_SHARED)
+		prot |= UK_PAL_PAGE_ATTR_SHARED;
 
 	return prot;
 }
@@ -1510,6 +1513,7 @@ int uk_paging_init(void)
 		if (unlikely(rc && rc != -ENOMEM))
 			uk_pr_err("Cannot add %12lx-%12lx to paging: %d\n",
 				  mrd->pbase, mrd->pbase + mrd->len, rc);
+
 	}
 
 	/* The frame allocator should've only had page-aligned memory regions

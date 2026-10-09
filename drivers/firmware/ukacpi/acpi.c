@@ -71,35 +71,42 @@ static __u8 get_acpi_checksum(void __maybe_unused *buf, __sz __maybe_unused len)
 #endif /* CONFIG_LIBUKACPI_CHECKSUM */
 }
 
-static void acpi_init_tables(void)
+const struct uk_acpi_sdt_hdr *
+uk_acpi_get_table(const char signature[UK_ACPI_SDT_SIG_LEN],
+		  unsigned int index)
 {
 	struct uk_acpi_sdt_hdr *h;
-	const char *sig;
-	__sz i, j;
+	unsigned int found = 0;
+	__sz i;
+
+	if (!acpi_rsdt || !signature)
+		return __NULL;
+
+	for (i = 0; i < acpi_rsdt_entries; i++) {
+		h = (struct uk_acpi_sdt_hdr *)get_rsdt_entry(i);
+		if (!h || memcmp(h->sig, signature, UK_ACPI_SDT_SIG_LEN))
+			continue;
+		if (h->tab_len < sizeof(*h) ||
+		    unlikely(get_acpi_checksum(h, h->tab_len))) {
+			uk_pr_warn("ACPI %.4s corrupted\n", signature);
+			continue;
+		}
+		if (found++ == index)
+			return h;
+	}
+
+	return __NULL;
+}
+
+static void acpi_init_tables(void)
+{
+	__sz j;
 
 	UK_ASSERT(acpi_rsdt);
 
-	for (i = 0; i < acpi_rsdt_entries; i++)
-		for (j = 0; j < ARRAY_SIZE(acpi_sdts); j++) {
-			if (*acpi_sdts[j].sdt)
-				continue;
-
-			h = (struct uk_acpi_sdt_hdr *)get_rsdt_entry(i);
-			sig = acpi_sdts[j].sig;
-
-			if (!memcmp(h->sig, sig, UK_ACPI_SDT_SIG_LEN)) {
-				if (unlikely(get_acpi_checksum(h,
-							       h->tab_len))) {
-					uk_pr_warn("ACPI %s corrupted\n", sig);
-
-					continue;
-				}
-
-				*acpi_sdts[j].sdt = h;
-
-				continue;
-			}
-		}
+	for (j = 0; j < ARRAY_SIZE(acpi_sdts); j++)
+		*acpi_sdts[j].sdt = (struct uk_acpi_sdt_hdr *)
+			uk_acpi_get_table(acpi_sdts[j].sig, 0);
 }
 
 /*

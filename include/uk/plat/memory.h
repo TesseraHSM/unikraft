@@ -69,6 +69,15 @@ extern "C" {
 #define UKPLAT_MEMRF_WRITE		0x0002	/* Region is writable */
 #define UKPLAT_MEMRF_EXECUTE		0x0004	/* Region is executable */
 
+/* Region is shared with the hypervisor.
+ *
+ * On a confidential guest this means the region must be mapped without the
+ * encryption bit, because something outside the guest's encryption domain has
+ * to read it. The region is already on the far side of that boundary by the
+ * time it is described here; the flag only says how to map it.
+ */
+#define UKPLAT_MEMRF_SHARED		0x0008
+
 /**
  * Descriptor of a memory region
  */
@@ -145,7 +154,8 @@ struct ukplat_memregion_desc {
 	do {								\
 		__u16 flags_all __maybe_unused = UKPLAT_MEMRF_READ    |	\
 						 UKPLAT_MEMRF_WRITE   |	\
-						 UKPLAT_MEMRF_EXECUTE;	\
+						 UKPLAT_MEMRF_EXECUTE |	\
+						 UKPLAT_MEMRF_SHARED;	\
 									\
 		UK_ASSERT(((mrd)->flags & flags_all) == (mrd)->flags);	\
 	} while (0)

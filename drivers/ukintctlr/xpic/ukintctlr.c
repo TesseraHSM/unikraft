@@ -15,55 +15,22 @@
 #if CONFIG_LIBUKINTCTLR_APIC
 #include <uk/arch/x86_64.h>
 #include <uk/arch/util.h>
+#include <uk/intctlr/apic.h>
 
-static inline int x2apic_enable(void)
-{
-	__u32 eax, ebx, ecx, edx;
-
-	/* Check for x2APIC support */
-	uk_arch_x86_64_cpuid(1, 0, &eax, &ebx, &ecx, &edx);
-	if (!(ecx & UK_ARCH_X86_64_CPUID1_ECX_X2APIC))
-		return -ENOTSUP;
-
-	/* Check if APIC is active */
-	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
-					    &eax, &edx);
-	if (!(eax & UK_ARCH_X86_64_APIC_BASE_EN))
-		return -ENOTSUP;
-
-	/* Switch to x2APIC mode */
-	eax |= UK_ARCH_X86_64_APIC_BASE_EXTD;
-	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_BASE,
-					    eax, edx);
-
-	/* Set APIC software enable flag if necessary */
-	uk_arch_x86_64_rdmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
-					    &eax, &edx);
-	if ((eax & UK_ARCH_X86_64_APIC_SVR_EN) == 0) {
-		eax |= UK_ARCH_X86_64_APIC_SVR_EN;
-		uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_SVR,
-						    eax, edx);
-	}
-
-	/*
-	 * TODO: Configure spurious interrupt vector number
-	 * After power-up or reset this is 0xff, which might not be
-	 * configured in the trap table
-	 */
-
-	return 0;
-}
-
-static inline void x2apic_ack_interrupt(void)
-{
-	uk_arch_x86_64_wrmsr(UK_ARCH_X86_64_APIC_MSR_EOI, 0, 0);
-}
-
-#define apic_ack_interrupt	x2apic_ack_interrupt
-#define apic_enable		x2apic_enable
+/* The local APIC is not always reachable through the x2APIC MSR window: on a
+ * machine that lacks x2APIC the registers are memory-mapped instead, and the
+ * MSR access faults. Both the acknowledgement below and the enable path are
+ * therefore routed through the mode-neutral accessors in <uk/intctlr/apic.h>.
+ */
+#define apic_ack_interrupt	uk_intctlr_apic_eoi
+#define apic_enable		uk_intctlr_apic_enable
 #endif /* CONFIG_LIBUKINTCTLR_APIC */
 
 #include "pic.h"
+
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+__isr int mshv_hv_no_eoi_required(void);
+#endif
 
 static struct uk_intctlr_desc intctlr;
 
@@ -75,7 +42,7 @@ static int configure_irq(struct uk_intctlr_irq *irq __unused)
 static int uk_intctlr_xpic_handle_irq(void *data)
 {
 	struct uk_lcpu_except_irq_ctx *ctx;
-	__u32 irq;
+	__u32 __unused irq;
 
 	ctx = data;
 	uk_intctlr_irq_handle(ctx);
@@ -83,8 +50,14 @@ static int uk_intctlr_xpic_handle_irq(void *data)
 	irq = uk_lcpu_except_irq_ctx_get_irq(ctx);
 
 #if CONFIG_LIBUKINTCTLR_APIC
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	if (!mshv_hv_no_eoi_required())
+		apic_ack_interrupt();
+#else
 	apic_ack_interrupt();
+#endif
 
+#if !CONFIG_LIBUKINTCTLR_XPIC_NO_8259
 	/* FIXME This is here because right now we only use
 	 * APIC for IPIs on SMP. This should be removed as
 	 * soon as we fully implement APIC and get rid of
@@ -92,6 +65,7 @@ static int uk_intctlr_xpic_handle_irq(void *data)
 	 */
 	if (irq <= 16)
 		pic_ack_irq(irq);
+#endif /* !CONFIG_LIBUKINTCTLR_XPIC_NO_8259 */
 #else   /* !CONFIG_LIBUKINTCTLR_APIC */
 	pic_ack_irq(irq);
 #endif /* !CONFIG_LIBUKINTCTLR_APIC */
@@ -101,14 +75,38 @@ static int uk_intctlr_xpic_handle_irq(void *data)
 
 UK_EVENT_HANDLER(UK_LCPU_EXCEPT_EVENT_IRQ, uk_intctlr_xpic_handle_irq);
 
+#if CONFIG_LIBUKINTCTLR_XPIC_NO_8259
+/* Without an 8259 there is nothing to mask or unmask: the only interrupt
+ * sources on such machines are local APIC LVT entries, which are masked
+ * through the LVT entry itself by whoever owns it.
+ */
+static void noop_mask_irq(unsigned int irq __unused) { }
+static void noop_unmask_irq(unsigned int irq __unused) { }
+
+static struct uk_intctlr_driver_ops apic_only_ops = {
+	.fdt_xlat = __NULL,
+	.mask_irq = noop_mask_irq,
+	.unmask_irq = noop_unmask_irq,
+};
+#endif /* CONFIG_LIBUKINTCTLR_XPIC_NO_8259 */
+
 int uk_intctlr_probe(void)
 {
-	int rc = -ENODEV;
 	struct uk_intctlr_driver_ops *ops;
+
+#if CONFIG_LIBUKINTCTLR_XPIC_NO_8259
+	/* Touching the 8259 command/data ports on a machine that has none is
+	 * harmless, but pointless, and the resulting ops would be lying about
+	 * being able to mask interrupts.
+	 */
+	ops = &apic_only_ops;
+#else /* !CONFIG_LIBUKINTCTLR_XPIC_NO_8259 */
+	int rc;
 
 	rc = pic_init(&ops);
 	if (unlikely(rc))
 		return rc;
+#endif /* !CONFIG_LIBUKINTCTLR_XPIC_NO_8259 */
 
 #if CONFIG_LIBUKINTCTLR_APIC
 	apic_enable();

@@ -48,6 +48,10 @@
 #include <virtio/virtqueue.h>
 #include <virtio/virtio_bus.h>
 
+#if CONFIG_LIBVIRTIO_SNP_DMA
+#include <uk/plat/shmem.h>
+#endif
+
 #ifdef CONFIG_LIBUKVMEM
 #include <uk/falloc.h>
 #include <uk/vmem.h>
@@ -60,6 +64,12 @@
 struct virtqueue_desc_info {
 	void *cookie;
 	__u16 desc_count;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	__paddr_t private_pa;
+	__u32 dma_len;
+	__u16 next;
+	__u8 writable;
+#endif
 };
 
 struct virtqueue_vring {
@@ -78,9 +88,131 @@ struct virtqueue_vring {
 	__u8 uses_event_idx;
 	/* EVENT_IDX last notified idx */
 	__u16 last_notified_idx;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	void *dma_pool;
+	__u16 private_avail_idx;
+#endif
 	/* Cookie to identify driver buffer */
 	struct virtqueue_desc_info vq_info[];
 };
+
+#if CONFIG_LIBVIRTIO_SNP_DMA
+static int virtqueue_dma_copy(__paddr_t pa, void *bounce, __u32 len,
+			     int to_device)
+{
+	struct uk_pagetable *pt = uk_paging_pt_get_active();
+	__vaddr_t va;
+	__sz offset = pa & (__PAGE_SIZE - 1);
+
+	va = uk_paging_page_kmap(pt, pa - offset, 1, 0);
+	if (va == UK_PAGING_VADDR_INV)
+		return -ENOMEM;
+	if (to_device)
+		memcpy(bounce, (void *)(va + offset), len);
+	else
+		memcpy((void *)(va + offset), bounce, len);
+	uk_paging_page_kunmap(pt, va, 1, 0);
+	return 0;
+}
+
+static int virtqueue_dma_desc_count(struct uk_sglist *sg, __u16 count,
+				   __u16 capacity)
+{
+	__sz total = 0;
+	__sz len, offset;
+	unsigned int i;
+
+	for (i = 0; i < count; i++) {
+		len = sg->sg_segs[i].ss_len;
+		offset = sg->sg_segs[i].ss_paddr & (__PAGE_SIZE - 1);
+		if (!len || len > (__sz)capacity * __PAGE_SIZE)
+			return -ENOSPC;
+		total += (offset + len + __PAGE_SIZE - 1) / __PAGE_SIZE;
+		if (total > capacity)
+			return -ENOSPC;
+	}
+	return (int)total;
+}
+
+static int virtqueue_dma_enqueue(struct virtqueue_vring *vrq, __u16 head,
+				struct uk_sglist *sg, __u16 read_bufs,
+				__u16 write_bufs, __u16 count)
+{
+	__u16 idx = head, remaining = count;
+	unsigned int i;
+	__paddr_t pa;
+	__sz len;
+	__u32 part;
+	void *bounce;
+	struct virtqueue_desc_info *info;
+	int rc;
+
+	for (i = 0; i < (unsigned int)read_bufs + write_bufs; i++) {
+		pa = sg->sg_segs[i].ss_paddr;
+		len = sg->sg_segs[i].ss_len;
+		while (len) {
+			part = MIN(len, __PAGE_SIZE - (pa & (__PAGE_SIZE - 1)));
+			info = &vrq->vq_info[idx];
+			bounce = (char *)vrq->dma_pool + (__sz)idx * __PAGE_SIZE;
+			memset(bounce, 0, __PAGE_SIZE);
+			if (i < read_bufs) {
+				rc = virtqueue_dma_copy(pa, bounce, part, 1);
+				if (rc)
+					return rc;
+			}
+			info->private_pa = pa;
+			info->dma_len = part;
+			info->writable = i >= read_bufs;
+			vrq->vring.desc[idx].addr = ukplat_shmem_gpa(bounce);
+			vrq->vring.desc[idx].len = part;
+			vrq->vring.desc[idx].next = info->next;
+			vrq->vring.desc[idx].flags =
+				(info->writable ? VRING_DESC_F_WRITE : 0) |
+				(--remaining ? VRING_DESC_F_NEXT : 0);
+			idx = info->next;
+			pa += part;
+			len -= part;
+		}
+	}
+	return idx;
+}
+
+static int virtqueue_dma_complete(struct virtqueue_vring *vrq, __u32 head,
+				 __u32 len)
+{
+	__u32 capacity = 0, part;
+	__u16 idx, count, i;
+	struct virtqueue_desc_info *info;
+	void *bounce;
+	int rc;
+
+	if (head >= vrq->vring.num || !vrq->vq_info[head].cookie)
+		return -EIO;
+	count = vrq->vq_info[head].desc_count;
+	for (i = 0, idx = head; i < count; i++) {
+		info = &vrq->vq_info[idx];
+		if (info->writable)
+			capacity += info->dma_len;
+		idx = info->next;
+	}
+	if (len > capacity)
+		return -EIO;
+	for (i = 0, idx = head; i < count; i++) {
+		info = &vrq->vq_info[idx];
+		bounce = (char *)vrq->dma_pool + (__sz)idx * __PAGE_SIZE;
+		if (info->writable && len) {
+			part = MIN(len, info->dma_len);
+			rc = virtqueue_dma_copy(info->private_pa, bounce, part, 0);
+			if (rc)
+				return rc;
+			len -= part;
+		}
+		memset(bounce, 0, __PAGE_SIZE);
+		idx = info->next;
+	}
+	return 0;
+}
+#endif
 
 /**
  * Static function Declaration(s).
@@ -170,7 +302,12 @@ static inline void virtqueue_ring_update_avail(struct virtqueue_vring *vrq,
 {
 	__u16 avail_idx;
 
-	avail_idx = vrq->vring.avail->idx & (vrq->vring.num - 1);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool)
+		avail_idx = vrq->private_avail_idx & (vrq->vring.num - 1);
+	else
+#endif
+		avail_idx = vrq->vring.avail->idx & (vrq->vring.num - 1);
 	/* Adding the idx to available ring */
 	vrq->vring.avail->ring[avail_idx] = idx;
 	/**
@@ -178,7 +315,12 @@ static inline void virtqueue_ring_update_avail(struct virtqueue_vring *vrq,
 	 * descriptor and then increment available index.
 	 */
 	uk_arch_wmb();
-	vrq->vring.avail->idx++;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool)
+		vrq->vring.avail->idx = ++vrq->private_avail_idx;
+	else
+#endif
+		vrq->vring.avail->idx++;
 }
 
 static inline void virtqueue_detach_desc(struct virtqueue_vring *vrq,
@@ -186,6 +328,21 @@ static inline void virtqueue_detach_desc(struct virtqueue_vring *vrq,
 {
 	struct vring_desc *desc;
 	struct virtqueue_desc_info *vq_info;
+
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool) {
+		__u16 idx = head_idx, i;
+
+		vq_info = &vrq->vq_info[head_idx];
+		vrq->desc_avail += vq_info->desc_count;
+		for (i = 1; i < vq_info->desc_count; i++)
+			idx = vrq->vq_info[idx].next;
+		vrq->vq_info[idx].next = vrq->head_free_desc;
+		vrq->head_free_desc = head_idx;
+		vq_info->desc_count = 0;
+		return;
+	}
+#endif
 
 	desc = &vrq->vring.desc[head_idx];
 	vq_info = &vrq->vq_info[head_idx];
@@ -318,6 +475,10 @@ __paddr_t virtqueue_physaddr(struct virtqueue *vq)
 	UK_ASSERT(vq);
 
 	vrq = to_virtqueue_vring(vq);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool)
+		return ukplat_shmem_gpa(vrq->vring.desc);
+#endif
 	return uk_paging_virt_to_phys((__vaddr_t)vrq->vring_mem);
 }
 
@@ -328,6 +489,10 @@ __paddr_t virtqueue_get_avail_addr(struct virtqueue *vq)
 	UK_ASSERT(vq);
 
 	vrq = to_virtqueue_vring(vq);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool)
+		return ukplat_shmem_gpa(vrq->vring.avail);
+#endif
 	return virtqueue_physaddr(vq) +
 		((char *)vrq->vring.avail - (char *)vrq->vring.desc);
 }
@@ -339,6 +504,10 @@ __paddr_t virtqueue_get_used_addr(struct virtqueue *vq)
 	UK_ASSERT(vq);
 
 	vrq = to_virtqueue_vring(vq);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool)
+		return ukplat_shmem_gpa(vrq->vring.used);
+#endif
 	return virtqueue_physaddr(vq) +
 		((char *)vrq->vring.used - (char *)vrq->vring.desc);
 }
@@ -373,9 +542,26 @@ int virtqueue_buffer_dequeue(struct virtqueue *vq, void **cookie, __u32 *len)
 	 * host.
 	 */
 	uk_arch_rmb();
-	head_idx = elem->id;
-	if (len)
-		*len = elem->len;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool) {
+		__u32 id = __atomic_load_n(&elem->id, __ATOMIC_RELAXED);
+		__u32 written = __atomic_load_n(&elem->len, __ATOMIC_RELAXED);
+		int rc = virtqueue_dma_complete(vrq, id, written);
+
+		if (rc) {
+			uk_pr_err_isr("Invalid shared virtqueue completion\n");
+			return rc;
+		}
+		head_idx = id;
+		if (len)
+			*len = written;
+	} else
+#endif
+	{
+		head_idx = elem->id;
+		if (len)
+			*len = elem->len;
+	}
 	*cookie = vrq->vq_info[head_idx].cookie;
 	virtqueue_detach_desc(vrq, head_idx);
 	vrq->vq_info[head_idx].cookie = NULL;
@@ -394,6 +580,18 @@ int virtqueue_buffer_enqueue(struct virtqueue *vq, void *cookie,
 
 	vrq = to_virtqueue_vring(vq);
 	total_desc = read_bufs + write_bufs;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool) {
+		int count;
+
+		if (total_desc > sg->sg_nseg || total_desc > vrq->vring.num)
+			return -EINVAL;
+		count = virtqueue_dma_desc_count(sg, total_desc, vrq->vring.num);
+		if (count < 0)
+			return count;
+		total_desc = count;
+	}
+#endif
 	if (unlikely(total_desc < 1 || total_desc > vrq->vring.num)) {
 		uk_pr_err_isr("%"__PRIu32" invalid number of descriptor\n",
 			      total_desc);
@@ -413,8 +611,21 @@ int virtqueue_buffer_enqueue(struct virtqueue *vq, void *cookie,
 	/**
 	 * We separate the descriptor management to enqueue segment(s).
 	 */
-	idx = virtqueue_buffer_enqueue_segments(vrq, head_idx, sg,
-			read_bufs, write_bufs);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool) {
+		int rc = virtqueue_dma_enqueue(vrq, head_idx, sg,
+					      read_bufs, write_bufs, total_desc);
+
+		if (rc < 0) {
+			vrq->vq_info[head_idx].cookie = NULL;
+			vrq->vq_info[head_idx].desc_count = 0;
+			return rc;
+		}
+		idx = rc;
+	} else
+#endif
+		idx = virtqueue_buffer_enqueue_segments(vrq, head_idx, sg,
+						       read_bufs, write_bufs);
 	/* Metadata maintenance for the virtqueue */
 	vrq->head_free_desc = idx;
 	vrq->desc_avail -= total_desc;
@@ -436,6 +647,14 @@ static void virtqueue_vring_init(struct virtqueue_vring *vrq, __u16 nr_desc,
 	vrq->desc_avail = vrq->vring.num;
 	vrq->head_free_desc = 0;
 	vrq->last_used_desc_idx = 0;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	vrq->private_avail_idx = 0;
+	for (i = 0; i < nr_desc; i++) {
+		vrq->vq_info[i].cookie = NULL;
+		vrq->vq_info[i].desc_count = 0;
+		vrq->vq_info[i].next = i + 1;
+	}
+#endif
 	for (i = 0; i < nr_desc - 1; i++)
 		vrq->vring.desc[i].next = i + 1;
 	/**
@@ -470,8 +689,37 @@ struct virtqueue *virtqueue_create(__u16 queue_id, __u16 nr_descs, __u16 align,
 	 * allocation.
 	 */
 	vrq->vring_mem = NULL;
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	vrq->dma_pool = NULL;
+#endif
 
 	ring_size = vring_size(nr_descs, align);
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	rc = ukplat_shmem_init();
+	if (rc)
+		goto err_freevq;
+	if (ukplat_shmem_required()) {
+		/* Each descriptor array fits one page; avail/used have own GPAs. */
+		if (nr_descs > 256) {
+			rc = -EINVAL;
+			goto err_freevq;
+		}
+		vrq->vring_mem = ukplat_shmem_alloc(
+			ring_size, UK_PAGING_PAGE_ATTR_PROT_RW);
+		if (!vrq->vring_mem) {
+			rc = -ENOMEM;
+			goto err_freevq;
+		}
+		vrq->dma_pool = ukplat_shmem_alloc(
+			(__sz)nr_descs * __PAGE_SIZE, UK_PAGING_PAGE_ATTR_PROT_RW);
+		if (!vrq->dma_pool) {
+			ukplat_shmem_free(vrq->vring_mem);
+			rc = -ENOMEM;
+			goto err_freevq;
+		}
+		goto ring_ready;
+	}
+#endif
 #if CONFIG_LIBUKVMEM
 	struct uk_pagetable *pt = uk_paging_pt_get_active();
 	__paddr_t paddr = UK_PAGING_PADDR_ANY;
@@ -498,6 +746,9 @@ struct virtqueue *virtqueue_create(__u16 queue_id, __u16 nr_descs, __u16 align,
 		goto err_freevq;
 	}
 #endif /* !CONFIG_LIBUKVMEM */
+#if CONFIG_LIBVIRTIO_SNP_DMA
+ring_ready:
+#endif
 	memset(vrq->vring_mem, 0, ring_size);
 	virtqueue_vring_init(vrq, nr_descs, align);
 	vrq->uses_event_idx =
@@ -529,6 +780,19 @@ void virtqueue_destroy(__u16 align __maybe_unused,
 	UK_ASSERT(vq);
 
 	vrq = to_virtqueue_vring(vq);
+
+#if CONFIG_LIBVIRTIO_SNP_DMA
+	if (vrq->dma_pool) {
+		if (vrq->desc_avail == vrq->vring.num) {
+			ukplat_shmem_free(vrq->dma_pool);
+			ukplat_shmem_free(vrq->vring_mem);
+		} else {
+			uk_pr_err("Retaining DMA pages with outstanding descriptors\n");
+		}
+		uk_free(a, vrq);
+		return;
+	}
+#endif
 
 	/* Free the ring */
 #if CONFIG_LIBUKVMEM

@@ -20,6 +20,9 @@
 #include <uk/assert.h>
 #include <uk/essentials.h>
 #include <uk/intctlr.h>
+#if CONFIG_LIBUKINTCTLR_APIC
+#include <uk/intctlr/apic.h>
+#endif /* CONFIG_LIBUKINTCTLR_APIC */
 
 #include <uk/lcpu.h>
 #include <uk/plat/common/sections.h>
@@ -167,11 +170,21 @@ void _ukplat_entry(struct ukplat_bootinfo *bi)
 	if (unlikely(rc))
 		UK_CRASH("Mem init failed: %d\n", rc);
 
+#if CONFIG_LIBUKINTCTLR_APIC
+	/* The interrupt controller was probed against the static boot page
+	 * table, which ukplat_mem_init() has just replaced. A memory-mapped
+	 * local APIC window has to be re-established in the new table before
+	 * anything touches it again.
+	 */
+	uk_intctlr_apic_remap();
+#endif /* CONFIG_LIBUKINTCTLR_APIC */
+
 #ifdef CONFIG_HAVE_SYSCALL
 	_init_syscall();
 #endif /* CONFIG_HAVE_SYSCALL */
 
 #if CONFIG_HAVE_X86PKU
+	/* Enable memory protection keys (PKU) */
 	_check_ospke();
 #endif /* CONFIG_HAVE_X86PKU */
 

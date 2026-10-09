@@ -183,6 +183,7 @@ static __noreturn void idle_thread_fn(void *argp)
 	UK_ASSERT(c);
 
 	for (;;) {
+
 		flags = uk_lcpu_save_irqf();
 
 		/*

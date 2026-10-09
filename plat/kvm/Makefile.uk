@@ -24,7 +24,7 @@ LIBKVMPLAT_CXXFLAGS            += -DKVMPLAT -DUK_USE_SECTION_SEGMENTS
 ##
 ## Default Linker script
 ifeq ($(CONFIG_ARCH_X86_64),y)
-UK_PLAT_KVM_DEF_LDS            := $(CONFIG_UK_BASE)/plat/kvm/x86/link64.lds.S
+UK_PLAT_KVM_DEF_LDS            := $(UK_PLAT_COMMON_BASE)/x86/link64.lds.S
 else
 ifeq ($(CONFIG_ARCH_ARM_64),y)
 UK_PLAT_KVM_DEF_LDS            := $(CONFIG_UK_BASE)/plat/kvm/arm/link64.lds.S
@@ -42,18 +42,29 @@ ifeq ($(CONFIG_KVM_BOOT_PROTO_MULTIBOOT),y)
 LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/multiboot.S|x86
 LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/multiboot.c
 else ifeq ($(CONFIG_KVM_BOOT_PROTO_LXBOOT),y)
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/lxboot.S|x86
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/lxboot.c
-else ifeq ($(CONFIG_KVM_BOOT_PROTO_EFI_STUB),y)
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/efi_entry64.S|x86
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/efi_post.c|isr
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/lxboot.S|x86
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/lxboot.c|common
+ifeq ($(CONFIG_X86_SNP_VC_EARLY),y)
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/snp_vc_early.S|x86
 endif
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/pagetable64.S
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/cpu_vectors_x86_64.S
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/setup.c
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/lcpu_start.S
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/tscclock.c
-LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(LIBKVMPLAT_BASE)/x86/time.c
+ifeq ($(CONFIG_X86_SNP_EARLY_CON),y)
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/snp_dbg.S|x86
+endif
+else ifeq ($(CONFIG_KVM_BOOT_PROTO_EFI_STUB),y)
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/efi_entry64.S|x86
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/efi_post.c|isr
+endif
+# The SNP secrets page is reached the same way whichever protocol booted the
+# payload, and the SNP support code calls into it unconditionally, so it is
+# not tied to one entry path.
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/snp_secrets.c|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/pagetable64.S|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/cpu_vectors_x86_64.S|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/setup.c|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/lcpu_start.S|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/tscclock.c|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/tscclock_pc.c|common
+LIBKVMPLAT_SRCS-$(CONFIG_ARCH_X86_64) += $(UK_PLAT_COMMON_BASE)/x86/time.c|common
 
 ##
 ## Architecture library definitions for arm64
@@ -89,12 +100,12 @@ LIBKVMPLAT_SRCS-$(CONFIG_ARCH_ARM_64) += $(LIBKVMPLAT_BASE)/arm/setup.c
 
 LIBKVMPLAT_SRCS-$(CONFIG_KVM_VMM_QEMU_ISA_DEBUG_EXIT) += $(LIBKVMPLAT_BASE)/x86/qemu.c|x86
 
-LIBKVMPLAT_SRCS-y                          += $(LIBKVMPLAT_BASE)/memory.c
+LIBKVMPLAT_SRCS-y                          += $(UK_PLAT_COMMON_BASE)/guest_memory.c|common
 
 LIBKVMPLAT_SRCS-y                          += $(UK_PLAT_COMMON_BASE)/memory.c|common
 LIBKVMPLAT_SRCS-y                          += $(UK_PLAT_KVM_DEF_LDS)
 ifeq ($(CONFIG_KVM_BOOT_PROTO_EFI_STUB),y)
-LIBKVMPLAT_SRCS-y                          += $(LIBKVMPLAT_BASE)/efi.c|isr
+LIBKVMPLAT_SRCS-y                          += $(UK_PLAT_COMMON_BASE)/efi.c|isr
 endif
 
 LIBKVMPLAT_SRCS-y		 += $(UK_PLAT_COMMON_BASE)/bootinfo.c|common

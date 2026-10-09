@@ -140,6 +140,9 @@ bpt_unmap_mrd:
  * 0xffffff8000000000 - 0xffffffffffffffff Mapping of first 512GB (for PTs)
  */
 .align 0x1000
+.global x86_bpt_begin
+x86_bpt_begin:
+.global x86_bpt_pt0_0_0
 x86_bpt_pt0_0_0: /* 4K pages */
 	pte_zero 0x0000000000000000, 0x001
 	pte_fill 0x0000000000001000, 0x1ff, PT_LVL, PTE_RW
@@ -183,3 +186,6 @@ x86_bpt_pml4:
 #else
 	pte_zero , 0x001
 #endif /* CONFIG_HAVE_PAGING */
+
+.global x86_bpt_end
+x86_bpt_end:

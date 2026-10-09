@@ -1,2 +1,12 @@
 config LIBVIRTIO_RING
 	bool
+
+config LIBVIRTIO_SNP_DMA
+	bool "Shared bounce DMA for physical SNP virtio queues"
+	depends on LIBVIRTIO_RING && HAVE_SNP_SHARED_DMA && ARCH_X86_64
+	depends on LIBUKPAGING
+	default n
+	help
+	  Keep queue ownership and payloads private while the device uses shared
+	  ring pages and a bounded bounce pool. Requires the platform SNP shared
+	  allocation and page-state transition implementation.

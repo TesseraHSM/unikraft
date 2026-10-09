@@ -41,12 +41,25 @@ extern "C" {
 
 #define UK_PLAT_NATIVE_PT_Lx_PTES(lvl)	UK_PLAT_NATIVE_PTES_PER_LEVEL
 
+/* Under SEV-SNP a page table entry carries an encryption bit above the
+ * physical address, and its position is reported by CPUID rather than fixed.
+ * It falls inside the address field, so it has to be added when an entry is
+ * built and taken back out when an address is read out of one. The value is
+ * zero on a machine without memory encryption, which makes both operations
+ * no-ops there.
+ */
+#if !__ASSEMBLY__
+extern __u64 uk_plat_native_pte_cbit;
+#endif /* !__ASSEMBLY__ */
+
 #define UK_PLAT_NATIVE_PT_Lx_PTE_PADDR(pte, lvl)		\
-	(((__paddr_t)(pte) & __X86_64_PTE_PADDR_MASK) & UK_PLAT_NATIVE_PAGE_MASK)
+	(((__paddr_t)(pte) & __X86_64_PTE_PADDR_MASK &		\
+	  ~uk_plat_native_pte_cbit) & UK_PLAT_NATIVE_PAGE_MASK)
 
 #define UK_PLAT_NATIVE_PT_Lx_PTE_SET_PADDR(pte, lvl, paddr)		    \
 	(((pte) & ~(__X86_64_PTE_PADDR_MASK & UK_PLAT_NATIVE_PAGE_MASK)) |   \
-	 (__pte_t)((paddr) & __X86_64_PTE_PADDR_MASK))
+	 (__pte_t)((paddr) & __X86_64_PTE_PADDR_MASK) |			     \
+	 (__pte_t)uk_plat_native_pte_cbit)
 
 #define UK_PLAT_NATIVE_PT_Lx_PTE_INVALID(lvl)		0x0UL
 
@@ -147,7 +160,13 @@ __paddr_t uk_plat_native_pt_read_base(void)
 static inline
 int uk_plat_native_pt_write_base(__paddr_t pt_paddr)
 {
-	__asm__ __volatile__("movq %0, %%cr3" :: "r"(pt_paddr));
+	/* CR3 names the top-level table the same way a table descriptor names
+	 * the next level down, so it carries the encryption bit too. Loading
+	 * it without would have the walker read the tables as shared memory
+	 * and translate through ciphertext.
+	 */
+	__asm__ __volatile__("movq %0, %%cr3"
+			     :: "r"(pt_paddr | uk_plat_native_pte_cbit));
 
 	return 0;
 }
@@ -174,6 +193,7 @@ uk_plat_native_pt_pte_create(__paddr_t pt_paddr, unsigned int level __unused,
 	__pte_t pt_pte;
 
 	pt_pte = pt_paddr & __X86_64_PTE_PADDR_MASK;
+	pt_pte |= uk_plat_native_pte_cbit;
 
 	/* We do not apply any restrictive protections in PT PTEs but control
 	 * protections in the PTEs mapping pages only

@@ -50,6 +50,21 @@ struct uk_acpi_xsdt {
 	__u64 entry[];
 } __packed;
 
+#define UK_ACPI_MCFG_SIG				"MCFG"
+struct uk_acpi_mcfg {
+	struct uk_acpi_sdt_hdr hdr;
+	__u64 reserved;
+	__u8 entries[];
+} __packed;
+
+struct uk_acpi_mcfg_entry {
+	__u64 base;
+	__u16 segment;
+	__u8 start_bus;
+	__u8 end_bus;
+	__u32 reserved;
+} __packed;
+
 #define UK_ACPI_MADT_SIG				"APIC"
 #define UK_ACPI_MADT_FLAGS_PCAT_COMPAT			0x0001
 struct uk_acpi_madt {

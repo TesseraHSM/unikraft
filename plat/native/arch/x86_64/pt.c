@@ -29,6 +29,12 @@ __pte_t uk_plat_native_pte_create(__paddr_t paddr, unsigned long attr,
 	pte = paddr & __X86_64_PTE_PADDR_MASK;
 	pte |= UK_ARCH_X86_64_PTE_PRESENT;
 
+	/* Memory is private unless the caller asked for a window the
+	 * hypervisor can read.
+	 */
+	if (!(attr & UK_PLAT_NATIVE_PAGE_ATTR_SHARED))
+		pte |= uk_plat_native_pte_cbit;
+
 	if (level > UK_PLAT_NATIVE_PAGE_LEVEL) {
 		UK_ASSERT(level <= UK_PLAT_NATIVE_PAGE_HUGE_LEVEL);
 		pte |= UK_ARCH_X86_64_PTE_PSE;
@@ -75,6 +81,15 @@ __pte_t uk_plat_native_pte_change_attr(__pte_t pte,
 		pte |= UK_ARCH_X86_64_PTE_PWT;
 	}
 
+	/* Whether the page is private is carried in the entry like any other
+	 * attribute, so a caller that does not ask for a shared mapping gets a
+	 * private one back even if the entry was shared before.
+	 */
+	if (new_attr & UK_PLAT_NATIVE_PAGE_ATTR_SHARED)
+		pte &= ~uk_plat_native_pte_cbit;
+	else
+		pte |= uk_plat_native_pte_cbit;
+
 	return pte;
 }
 
@@ -91,6 +106,9 @@ unsigned long uk_plat_native_attr_from_pte(__pte_t pte,
 
 	if ((pte & UK_ARCH_X86_64_PTE_PWT) && (pte & UK_ARCH_X86_64_PTE_PCD))
 		attr |= UK_ARCH_X86_64_PAGE_ATTR_WRITECOMBINE;
+
+	if (uk_plat_native_pte_cbit && !(pte & uk_plat_native_pte_cbit))
+		attr |= UK_PLAT_NATIVE_PAGE_ATTR_SHARED;
 
 	return attr;
 }

@@ -57,6 +57,8 @@
 
 extern int arch_pci_probe(struct uk_alloc *pha);
 
+static struct pci_bus_handler ph;
+
 static inline int pci_device_id_match(const struct pci_device_id *id0,
 					const struct pci_device_id *id1)
 {
@@ -155,6 +157,12 @@ void _pci_register_driver(struct pci_driver *drv)
 {
 	UK_ASSERT(drv != NULL);
 	uk_list_add_tail(&drv->list, &ph.drv_list);
+}
+
+void _pci_register_device(struct pci_device *dev)
+{
+	UK_ASSERT(dev != NULL);
+	uk_list_add_tail(&dev->list, &ph.dev_list);
 }
 
 

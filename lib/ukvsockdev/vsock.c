@@ -585,7 +585,11 @@ int uk_vsock_conn_reset(struct uk_vsock *sock)
 		/* The peer rejected the connection attempt */
 		uk_pr_debug("peer rejected connection on sock=%p, setting ECONNREFUSED\n",
 			    sock);
-		sock->so_error = -ECONNREFUSED;
+		/* SO_ERROR is read by applications as a plain errno, so it is
+		 * stored the way they expect it rather than the way the
+		 * kernel passes errors internally.
+		 */
+		sock->so_error = ECONNREFUSED;
 		dev = uk_vsockdev_get();
 		rc = dev->ops->reset(dev, sock);
 		if (unlikely(rc)) {
@@ -636,9 +640,14 @@ int uk_vsock_conn_shutdown(struct uk_vsock *sock, int peer_rx, int peer_tx)
 	}
 	if (peer_tx) {
 		/* peer will not send any more data */
-		uk_pr_debug("rx shutdown on sock=%p, setting EPOLLRDHUP\n",
+		uk_pr_debug("rx shutdown on sock=%p, setting EPOLLIN|EPOLLRDHUP\n",
 			    sock);
-		posix_sock_event_set(sock->posix_sock, EPOLLRDHUP);
+		/* EPOLLIN as well as EPOLLRDHUP: a reader blocked waiting for
+		 * data has to be woken so that it can observe the end of the
+		 * stream. Signalling only EPOLLRDHUP leaves it asleep for
+		 * ever, because no more data is coming to set EPOLLIN.
+		 */
+		posix_sock_event_set(sock->posix_sock, EPOLLIN | EPOLLRDHUP);
 		sock->rx_shutdown = 1;
 	}
 	if (sock->rx_shutdown && sock->tx_shutdown) {
@@ -1505,6 +1514,32 @@ static ssize_t vsock_sendto(posix_sock *sock, const void *buf, size_t len,
 	return res;
 }
 
+/*
+ * Tell the transport that the application has taken bytes out of the receive
+ * buffer.
+ *
+ * A transport that has to leave data in a shared ring when the socket buffer
+ * is full has no other way of learning that there is room again. Transports
+ * with their own credit protocol do not implement this and are unaffected.
+ */
+static void vsock_notify_rx_consumed(struct uk_vsock *vsock, size_t size)
+{
+	struct uk_vsockdev *dev;
+	int rc;
+
+	if (!size)
+		return;
+
+	dev = uk_vsockdev_get();
+	if (unlikely(!dev || !dev->ops->rx_consumed))
+		return;
+
+	rc = dev->ops->rx_consumed(dev, vsock, size);
+	if (unlikely(rc))
+		uk_pr_err("Transport refused a receive credit update: %d\n",
+			  rc);
+}
+
 static ssize_t vsock_read(posix_sock *sock,
 			  const struct iovec *iov, size_t iovcnt)
 {
@@ -1553,6 +1588,7 @@ static ssize_t vsock_read(posix_sock *sock,
 		uk_pr_debug("read %zd bytes from iov[%zu], consuming\n",
 			    res, ioi);
 		uk_vsock_buffer_consume(&vsock->rx, res);
+		vsock_notify_rx_consumed(vsock, (size_t)res);
 		ret += res;
 	}
 
@@ -1617,6 +1653,7 @@ static ssize_t vsock_recvfrom(posix_sock *sock, void *restrict buf, size_t len,
 	} else if (res > 0) {
 		uk_pr_debug("consuming %zd bytes from rx buffer\n", res);
 		uk_vsock_buffer_consume(&vsock->rx, res);
+		vsock_notify_rx_consumed(vsock, (size_t)res);
 	}
 
 	if (uk_vsock_buffer_is_empty(&vsock->rx)) {

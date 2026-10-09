@@ -58,6 +58,19 @@ extern "C" {
 #define UK_PLAT_NATIVE_PAGE_ATTR_PROT_WRITE	0x02 /* Page is writeable */
 #define UK_PLAT_NATIVE_PAGE_ATTR_PROT_EXEC	0x04 /* Page is executable */
 
+/* Page is shared with the hypervisor.
+ *
+ * On a confidential guest a mapping is private unless it says otherwise, and
+ * the encryption bit in the entry is what says so. A page the host has to
+ * read must be mapped without it, so the distinction is an attribute of the
+ * mapping and travels with it, rather than being patched in afterwards.
+ *
+ * Changing this attribute only rewrites the page table. It does not move the
+ * page across the encryption boundary, which is a negotiation with the
+ * hypervisor that has to happen in the right order around this change.
+ */
+#define UK_PLAT_NATIVE_PAGE_ATTR_SHARED		0x10
+
 #if !__ASSEMBLY__
 
 #define UK_PLAT_NATIVE_PAGE_Lx_HAS(lvl)			\

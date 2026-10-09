@@ -82,6 +82,42 @@ __noreturn static void crash_shutdown(void)
 
 UK_EVENT(UK_CRASH_EVENT);
 
+#if CONFIG_LIBUKDEBUG_CRASH_SCREEN
+/* The descriptor already carries the trap number, the faulting address and
+ * the error code, but nothing ever printed them, which left every crash
+ * looking alike. A page fault in particular is unreadable without its
+ * address and error code, so name the reason and decode the bits.
+ */
+static void crash_print_reason(struct uk_crash_descr *descr)
+{
+	switch (descr->reason) {
+	case UK_CRASH_REASON_PAGE_FAULT:
+		crash_printk("Page fault at 0x%lx, error code 0x%lx (%s, %s, %s%s%s)\n",
+			     (unsigned long)descr->arg1,
+			     (unsigned long)descr->arg2,
+			     (descr->arg2 & 0x1) ? "protection violation"
+						 : "page not present",
+			     (descr->arg2 & 0x2) ? "write" : "read",
+			     (descr->arg2 & 0x4) ? "user" : "supervisor",
+			     (descr->arg2 & 0x8) ? ", reserved bit set" : "",
+			     (descr->arg2 & 0x10) ? ", instruction fetch" : "");
+		break;
+	case UK_CRASH_REASON_UNHANDLED_TRAP:
+		crash_printk("Unhandled trap %lu (%s), error code 0x%lx\n",
+			     (unsigned long)descr->arg1,
+			     descr->arg2 ? (const char *)descr->arg2 : "unnamed",
+			     (unsigned long)descr->arg3);
+		break;
+	case UK_CRASH_REASON_EXPLICIT:
+		crash_printk("Explicit crash\n");
+		break;
+	default:
+		crash_printk("Crash reason %d\n", (int)descr->reason);
+		break;
+	}
+}
+#endif /* CONFIG_LIBUKDEBUG_CRASH_SCREEN */
+
 __noreturn void _uk_crash(struct uk_lcpu_regs *regs,
 			  struct uk_crash_descr *descr)
 {
@@ -115,6 +151,7 @@ __noreturn void _uk_crash(struct uk_lcpu_regs *regs,
 	crash_printk("Unikraft Crash - " STRINGIFY(UK_CODENAME)
 		     " (" STRINGIFY(UK_FULLVERSION) ")\n");
 	crash_print_thread_info();
+	crash_print_reason(descr);
 	crash_printk("    _      \n");
 	crash_printk("  cx xo    \n");
 	crash_printk("  (|O|)/V  \n");

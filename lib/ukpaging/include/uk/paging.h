@@ -41,6 +41,12 @@ extern "C" {
 #define UK_PAGING_PAGE_ATTR_PROT_WRITE	UK_PAL_PAGE_ATTR_PROT_WRITE
 #define UK_PAGING_PAGE_ATTR_PROT_EXEC	UK_PAL_PAGE_ATTR_PROT_EXEC
 
+/* Map the page without the confidential guest's encryption bit, so that the
+ * hypervisor can read it. Moving the page across the encryption boundary is a
+ * separate step; this only describes the mapping.
+ */
+#define UK_PAGING_PAGE_ATTR_SHARED	UK_PAL_PAGE_ATTR_SHARED
+
 #define UK_PAGING_PAGE_ATTR_PROT_RW			    \
 	(UK_PAGING_PAGE_ATTR_PROT_READ | UK_PAGING_PAGE_ATTR_PROT_WRITE)
 #define UK_PAGING_PAGE_ATTR_PROT_RWX			    \

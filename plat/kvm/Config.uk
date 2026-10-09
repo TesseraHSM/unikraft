@@ -61,6 +61,7 @@ config KVM_BOOT_PROTO_EFI_STUB
 	depends on OPTIMIZE_PIE
 	select LIBUKACPI
 	select LIBUKEFI
+	select LIBUKPAGING
 	help
 		Make Unikraft bootable by UEFI firmware
 
@@ -81,6 +82,15 @@ config KVM_BOOT_PROTO_EFI_STUB_INITRD_FNAME
 config KVM_BOOT_PROTO_EFI_STUB_DTB_FNAME
 	string "Name of the Devicetree Blob file"
 	default "$(UK_NAME).dtb"
+
+config KVM_BOOT_PROTO_EFI_STUB_DEBUG
+	bool "EFI stub diagnostic messages"
+	default n
+	help
+		Print diagnostic and fatal-error messages from the EFI stub
+		through the UEFI console (ConOut), before boot services are
+		exited. Without this, an early EFI stub failure resets the
+		machine silently, since the Unikraft console is not up yet.
 
 config KVM_BOOT_PROTO_EFI_STUB_RST_ATK_MITIGATION
 	bool "TCG Reset Attack Mitigation"
@@ -132,7 +142,6 @@ config KVM_VMM_FIRECRACKER
 	imply LIBUKINTCTLR_GICV3 if ARCH_ARM_64
 	imply LIBUKRTC_PL031
 	depends on ARCH_X86_64 || ARCH_ARM_64
-
 endchoice
 endif
 

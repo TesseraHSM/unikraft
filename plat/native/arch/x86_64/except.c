@@ -74,6 +74,20 @@ static __u8 idt_ist_disable_nesting[CONFIG_UKPLAT_CPU_MAXCOUNT];
 static __align(UKARCH_SP_ALIGN) /* IST{1, 2, 3} */
 __u8 lcpu_except_stack[CONFIG_UKPLAT_CPU_MAXCOUNT][3 * CPU_EXCEPT_STACK_SIZE];
 
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+#if CONFIG_HAVE_SMP
+#error "Restricted-injection exception stacks require a single CPU"
+#endif
+/* RI is uniprocessor-only. Never use an interrupted application's stack. */
+UK_CTASSERT(UKARCH_SP_ALIGN >= 16);
+UK_CTASSERT(IS_ALIGNED(CPU_EXCEPT_STACK_SIZE, 16));
+UK_CTASSERT(IS_ALIGNED(sizeof(struct uk_plat_native_regs), 16));
+static __align(UKARCH_SP_ALIGN) __u8 hv_landing_stack[CPU_EXCEPT_STACK_SIZE];
+static __align(UKARCH_SP_ALIGN) __u8 hv_work_stack[CPU_EXCEPT_STACK_SIZE];
+volatile int uk_plat_native_hv_work_active;
+__uptr uk_plat_native_hv_work_frame;
+#endif
+
 static __align(8)
 struct uk_arch_x86_64_tss64 cpu_tss[CONFIG_UKPLAT_CPU_MAXCOUNT];
 
@@ -106,6 +120,9 @@ static void tss_init(__u32 idx)
 		(__u64)&lcpu_except_stack[idx][CPU_EXCEPT_STACK_SIZE * 2];
 	cpu_tss[idx].ist[2] =
 		(__u64)&lcpu_except_stack[idx][CPU_EXCEPT_STACK_SIZE];
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	cpu_tss[idx].ist[3] = (__u64)(hv_landing_stack + sizeof(hv_landing_stack));
+#endif
 
 	tss_desc = (void *)&cpu_gdt64[idx][UK_ARCH_X86_64_GDT_DESC_TSS_LO];
 	tss_desc->limit_lo	= sizeof(cpu_tss[idx]);
@@ -143,6 +160,10 @@ void uk_plat_native_except_push_nested(void)
 
 	/* Save the value of the IST field and disable IST for the exception */
 	for (i = 0; i < IDT_IST_SAVE_LEN; i++) {
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+		if (i == 28)
+			continue;
+#endif
 		desc = &idt[i];
 		ist_saved[i] = desc->ist;
 		desc->ist = 0;
@@ -171,6 +192,10 @@ void uk_plat_native_except_pop_nested(void)
 
 	/* Restore the IST field values */
 	for (i = 0; i < IDT_IST_SAVE_LEN; i++) {
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+		if (i == 28)
+			continue;
+#endif
 		desc = &idt[i];
 		desc->ist = ist_saved[i];
 	}
@@ -308,6 +333,7 @@ trap_halt:
 
 UK_EVENT(UK_PLAT_NATIVE_EXCEPT_EVENT_IRQ);
 
+
 void uk_plat_native_except_irq_handler(struct uk_plat_native_regs *regs,
 				       __u32 irq)
 {
@@ -401,6 +427,46 @@ static void traps_table_init(__u32 idx)
 	FILL_TRAP_GATE(machine_check,	3); /* on IST3 (lcpu_except_stack) */
 	FILL_TRAP_GATE(simd_error,	2);
 	FILL_TRAP_GATE(virt_error,	2);
+
+	/*
+	 * Vector 29, #VC, is raised for every CPUID, MSR and I/O access an
+	 * SEV-SNP guest makes without a paravisor. It is a normal part of
+	 * running, not a fault, so it is serviced by the SNP handler rather
+	 * than reported. It deliberately runs on the current stack: unlike a
+	 * genuine fault, a #VC can be taken from inside an IRQ handler, and an
+	 * IST entry shared with that handler would be re-entered and corrupt
+	 * the frame it is nested inside.
+	 */
+#if CONFIG_X86_SNP_VC_EARLY
+	{
+		extern void snp_vc_handler(void);
+
+		idt_fillgate(29, snp_vc_handler, 0, idx);
+	}
+#endif /* CONFIG_X86_SNP_VC_EARLY */
+
+	/*
+	 * Vector 28, #HV, is how a guest launched with restricted injection
+	 * is told an interrupt is waiting: the hypervisor may no longer
+	 * inject the vector itself and writes it to a shared page instead.
+	 * It runs on the current stack for the same reason #VC does - it can
+	 * be taken from inside an interrupt handler, and an IST entry shared
+	 * with that handler would be re-entered.
+	 *
+	 * The gate is installed whether or not the guest was launched that
+	 * way. On a guest that was not, nothing raises the vector.
+	 */
+#if CONFIG_HAVE_MSHV_SYNIC
+	{
+		extern void cpu_trap_hv_injection(void);
+
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+		idt_fillgate(28, cpu_trap_hv_injection, 4, idx);
+#else
+		idt_fillgate(28, cpu_trap_hv_injection, 0, idx);
+#endif
+	}
+#endif /* CONFIG_HAVE_MSHV_SYNIC */
 
 	/*
 	 * Load IRQ vectors. All IRQs run on IST1 (lcpu_except_stack).
@@ -650,6 +716,16 @@ static void uk_plat_native_traps_init(void)
 
 __isr __uptr uk_plat_native_except_get_except_stack_base(void)
 {
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	__uptr sp = uk_arch_read_sp();
+
+	if (sp >= (__uptr)hv_landing_stack &&
+	    sp < (__uptr)(hv_landing_stack + sizeof(hv_landing_stack)))
+		return (__uptr)hv_landing_stack;
+	if (sp >= (__uptr)hv_work_stack &&
+	    sp < (__uptr)(hv_work_stack + sizeof(hv_work_stack)))
+		return (__uptr)hv_work_stack;
+#endif
 	return (__uptr)&lcpu_except_stack;
 }
 
@@ -730,3 +806,182 @@ __isr int uk_plat_native_except_init(void)
 
 	return 0;
 }
+
+#if CONFIG_HAVE_MSHV_SYNIC
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+extern volatile __u16 *mshv_hv_pending_word;
+__isr __u16 mshv_hv_doorbell_take(void);
+__isr void mshv_hv_doorbell_note(void);
+__isr unsigned int mshv_hv_spurious_vector(void);
+__isr int uk_intctlr_irq_is_registered(__u32 irq);
+extern const char uk_plat_native_hv_thunk_redo[];
+extern const char uk_plat_native_hv_thunk_chk[];
+extern const char uk_plat_native_hv_thunk_pop[];
+extern const char uk_plat_native_hv_thunk_iret[];
+
+/* #HV can observe the guard even with maskable interrupts disabled. */
+static volatile int hv_drain_active;
+static unsigned long hv_spurious_events;
+
+static __isr int hv_on_landing(__uptr sp)
+{
+	return sp >= (__uptr)hv_landing_stack &&
+	       sp < (__uptr)(hv_landing_stack + sizeof(hv_landing_stack));
+}
+
+__isr struct uk_plat_native_regs *
+uk_plat_native_hv_stack_enter(struct uk_plat_native_regs *regs)
+{
+	struct uk_plat_native_regs *dst;
+
+	if (hv_on_landing(regs->rsp))
+		UK_CRASH("#HV re-entered its landing stack before acknowledgement\n");
+	if (!(regs->rflags & UK_ARCH_X86_64_RFLAGS_IF) ||
+	    uk_plat_native_hv_work_active)
+		return regs;
+
+	/* Ownership outlives the drain and every intervening exception stack.
+	 * The return thunk releases it only at this frame's final register pop.
+	 */
+	uk_plat_native_hv_work_active = 1;
+	dst = (struct uk_plat_native_regs *)
+		(hv_work_stack + sizeof(hv_work_stack) - sizeof(*dst));
+	*dst = *regs;
+	uk_plat_native_hv_work_frame = (__uptr)&dst->rip;
+	return dst;
+}
+
+static __isr __u16 hv_pending(void)
+{
+	return mshv_hv_pending_word ? *mshv_hv_pending_word : 0;
+}
+
+static __isr void hv_drain(struct uk_plat_native_regs *regs)
+{
+	__u16 events;
+	unsigned int vector;
+
+	if (hv_drain_active)
+		return;
+	do {
+		hv_drain_active = 1;
+		while (hv_pending()) {
+			events = mshv_hv_doorbell_take();
+			if (events & 0x100)
+				UK_CRASH("#HV NMI delivery is unsupported\n");
+			if (events & 0x200)
+				UK_CRASH("#HV machine-check delivery is unsupported\n");
+			if (events & 0x7c00)
+				UK_CRASH("#HV reserved event bits: 0x%x\n", events);
+			vector = events & 0xff;
+			if (!vector)
+				continue;
+			if (vector == mshv_hv_spurious_vector()) {
+				hv_spurious_events++;
+				continue;
+			}
+			if (vector < 32 || !uk_intctlr_irq_is_registered(vector - 32))
+				UK_CRASH("#HV unregistered interrupt vector: %u\n", vector);
+			uk_plat_native_except_irq_handler(regs, vector - 32);
+		}
+		/* A busy nested return relies on this look after releasing ownership. */
+		hv_drain_active = 0;
+	} while (hv_pending());
+}
+
+__isr void uk_plat_native_hv_drain_masked(void)
+{
+	struct uk_plat_native_regs regs = { 0 };
+	__u16 cs, ss;
+
+	if (!mshv_hv_pending_word || hv_drain_active)
+		return;
+	UK_ASSERT(!(uk_arch_x86_64_rflags_get() & UK_ARCH_X86_64_RFLAGS_IF));
+	/* This describes the drain point, not a resumable interrupted context. */
+	__asm__ __volatile__("mov %%cs, %0" : "=r"(cs));
+	__asm__ __volatile__("mov %%ss, %0" : "=r"(ss));
+	regs.cs = cs;
+	regs.ss = ss;
+	regs.orig_rax = ~0UL;
+	regs.rflags = uk_arch_x86_64_rflags_get();
+	hv_drain(&regs);
+}
+
+__isr int uk_plat_native_hv_tail_drain(void)
+{
+	char stack_marker;
+
+	if (hv_drain_active || hv_on_landing((__uptr)&stack_marker))
+		return 0;
+	uk_plat_native_hv_drain_masked();
+	return 1;
+}
+
+__isr void uk_plat_native_hv_enable_irq(void)
+{
+	if (!mshv_hv_pending_word || hv_drain_active) {
+		uk_arch_x86_64_enable_irq();
+		return;
+	}
+	do {
+		uk_arch_x86_64_disable_irq();
+		uk_plat_native_hv_drain_masked();
+		uk_arch_x86_64_enable_irq();
+	} while (hv_pending());
+}
+
+void uk_plat_native_except_hv_handler(struct uk_plat_native_regs *regs)
+{
+	__uptr rip = regs->rip;
+
+	mshv_hv_doorbell_note();
+	/* A nested entry may overwrite popped slots. Only restart while scratch
+	 * remains above RSP, or push the restored register again at IRET.
+	 */
+	if (rip >= (__uptr)uk_plat_native_hv_thunk_chk &&
+	    rip <= (__uptr)uk_plat_native_hv_thunk_pop) {
+		regs->rip = (__uptr)uk_plat_native_hv_thunk_chk;
+		return;
+	}
+	if (rip == (__uptr)uk_plat_native_hv_thunk_iret) {
+		regs->rip = (__uptr)uk_plat_native_hv_thunk_redo;
+		return;
+	}
+	/* Saved IF=1 excludes both C and #VC ownership of the single GHCB.
+	 * Recoverable IST faults defer to a cooperative yield or a masked HLT;
+	 * the latter requires host re-entry for pending events (GHCB 5.3).
+	 */
+	if ((regs->rflags & UK_ARCH_X86_64_RFLAGS_IF) &&
+	    !hv_on_landing((__uptr)regs))
+		hv_drain(regs);
+}
+#else
+/* Declared here rather than included: the doorbell belongs to the MSHV
+ * platform code, which sits above this file and may not be depended on by it.
+ */
+void mshv_hv_doorbell_rearm(void);
+unsigned int mshv_hv_doorbell_next(void);
+
+/* The C side of #HV.
+ *
+ * The exception carries nothing, so everything it stands for is read back out
+ * of the doorbell page: potentially several events, since the hypervisor
+ * stops ringing once one is outstanding and coalesces the rest behind it.
+ * Each is then dispatched exactly as if it had been delivered directly, which
+ * is what lets every handler stay unaware of how it was reached.
+ */
+void uk_plat_native_except_hv_handler(struct uk_plat_native_regs *regs)
+{
+	unsigned int vector;
+
+	mshv_hv_doorbell_rearm();
+
+	while ((vector = mshv_hv_doorbell_next()) != 0) {
+		if (unlikely(vector < 32))
+			continue;
+
+		uk_plat_native_except_irq_handler(regs, vector - 32);
+	}
+}
+#endif /* CONFIG_MSHV_SNP_RESTRICTED_INJECTION */
+#endif /* CONFIG_HAVE_MSHV_SYNIC */

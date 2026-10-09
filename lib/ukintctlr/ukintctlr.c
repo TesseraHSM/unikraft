@@ -69,6 +69,13 @@ struct irq_handler {
 
 static struct irq_handler irq_handlers[MAX_IRQ][MAX_HANDLERS_PER_IRQ];
 
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+__isr int uk_intctlr_irq_is_registered(__u32 irq)
+{
+	return irq < MAX_IRQ && irq_handlers[irq][0].func != NULL;
+}
+#endif
+
 static inline struct irq_handler *allocate_handler(unsigned long irq)
 {
 	UK_ASSERT(irq <= MAX_IRQ);

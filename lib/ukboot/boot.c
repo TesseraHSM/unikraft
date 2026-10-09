@@ -341,6 +341,7 @@ void uk_boot_entry(void)
 	UK_ASSERT(auxspcb);
 	ukarch_auxspcb_set_uktlsp(auxspcb, uktlsp);
 	uk_lcpu_set_auxsp(auxsp);
+
 #endif /* CONFIG_LIBUKBOOT_INITALLOC */
 
 #if CONFIG_LIBUKINTCTLR
@@ -512,6 +513,7 @@ int do_main(int argc, char *argv[])
 
 	ret = main(argc, argv);
 	uk_pr_info("main returned %d\n", ret);
+
 	return ret;
 }
 

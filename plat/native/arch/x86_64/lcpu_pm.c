@@ -223,6 +223,19 @@ static void plat_native_lcpu_halt(void)
 
 static void plat_native_lcpu_halt_irq(void)
 {
+#if CONFIG_MSHV_SNP_RESTRICTED_INJECTION
+	extern int mshv_hv_doorbell_ready(void);
+	extern void uk_plat_native_hv_drain_masked(void);
+
+	if (mshv_hv_doorbell_ready()) {
+		/* GHCB 5.3 requires host re-entry if an event is already pending.
+		 * Do not create a pending-check-to-HLT race here.
+		 */
+		asm volatile ("hlt" : : : "memory");
+		uk_plat_native_hv_drain_masked();
+		return;
+	}
+#endif
 	/*
 	 * We have to be careful when enabling interrupts before entering a
 	 * halt state. If we want to wait for an interrupt (e.g., a timer)
