@@ -23,7 +23,7 @@ jobs:
       github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: staging
           submodules: recursive
@@ -79,7 +79,7 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: "Fetch version manifest"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: staging
           sparse-checkout: .github/actions/ci-versions
